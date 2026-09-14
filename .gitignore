@@ -1,0 +1,9 @@
+/vendor/
+/.env
+/.env.*
+!/.env.example
+/composer.lock
+*.log
+.DS_Store
+/.idea/
+/.vscode/
