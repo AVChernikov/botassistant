@@ -370,6 +370,7 @@ declare(strict_types=1);
   </div>
 
   <script src="lighter-api.js?v=1"></script>
+  <script src="chart-crosshair.js?v=1"></script>
   <script>
     const els = {
       market: document.getElementById('market'),
@@ -727,6 +728,9 @@ declare(strict_types=1);
         });
         ctx.fillText(label, x, cssH - 12);
       }
+      if (window.ChartCrosshair) {
+        ChartCrosshair.mark(canvas, { pad, points: candles.length });
+      }
     }
 
     function drawMacdChart(candles) {
@@ -837,6 +841,9 @@ declare(strict_types=1);
         els.signalVal.className = 'signal-line';
         els.histVal.textContent = h == null ? '—' : fmt(h, 4);
         els.histVal.className = h != null && h >= 0 ? 'up' : 'down';
+      }
+      if (window.ChartCrosshair) {
+        ChartCrosshair.mark(canvas, { pad, points: candles.length });
       }
     }
 

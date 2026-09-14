@@ -146,7 +146,7 @@ $titleTf = htmlspecialchars($resolution, ENT_QUOTES);
       font-size: 0.95rem;
     }
     .panel-body { padding: 1rem; }
-    .chart-wrap { width: 100%; height: 300px; }
+    .chart-wrap { position: relative; width: 100%; height: 300px; }
     .chart-wrap.indicator { height: 180px; }
     .chart-wrap canvas { width: 100%; height: 100%; display: block; }
     .grid {
@@ -243,6 +243,7 @@ $titleTf = htmlspecialchars($resolution, ENT_QUOTES);
     </div>
   </div>
 
+  <script src="chart-crosshair.js?v=1"></script>
   <script>
     const CONFIG = {
       method: <?= json_encode($method, JSON_UNESCAPED_UNICODE) ?>,
@@ -379,6 +380,9 @@ $titleTf = htmlspecialchars($resolution, ENT_QUOTES);
         const yO = yScale(o), yC = yScale(cl);
         ctx.fillRect(x - bodyW / 2, Math.min(yO, yC), bodyW, Math.max(1, Math.abs(yC - yO)));
       });
+      if (window.ChartCrosshair) {
+        ChartCrosshair.mark(canvas, { pad, points: candles.length });
+      }
     }
 
     function drawIndicator(canvas, indicator) {
@@ -459,6 +463,9 @@ $titleTf = htmlspecialchars($resolution, ENT_QUOTES);
           else ctx.lineTo(x, y);
         });
         ctx.stroke();
+      }
+      if (window.ChartCrosshair) {
+        ChartCrosshair.mark(canvas, { pad, points: n });
       }
     }
 

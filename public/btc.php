@@ -112,6 +112,7 @@ declare(strict_types=1);
     }
     .frame-body { padding: 0.9rem 1rem 1.1rem; }
     .chart-wrap {
+      position: relative;
       width: 100%;
       height: 280px;
     }
@@ -244,6 +245,7 @@ declare(strict_types=1);
   </div>
 
   <script src="lighter-api.js?v=1"></script>
+  <script src="chart-crosshair.js?v=1"></script>
   <script>
     const MARKET_ID = 1;
     const RESOLUTIONS = ['1d', '4h', '1h', '30m', '15m', '5m', '1m'];
@@ -413,6 +415,9 @@ declare(strict_types=1);
         });
         ctx.fillText(label, x, cssH - 10);
       }
+      if (window.ChartCrosshair) {
+        ChartCrosshair.mark(canvas, { pad, points: candles.length });
+      }
     }
 
     function drawMacdChart(canvas, candles, legendEls) {
@@ -496,6 +501,9 @@ declare(strict_types=1);
         legendEls.hist.textContent = h == null ? '—' : fmt(h, 4);
         legendEls.hist.className = h != null && h >= 0 ? 'up' : 'down';
       }
+      if (window.ChartCrosshair) {
+        ChartCrosshair.mark(canvas, { pad, points: candles.length });
+      }
     }
 
     function renderFrames(frames) {
@@ -530,6 +538,7 @@ declare(strict_types=1);
         drawCandleChart(canvases[0], candles);
         drawMacdChart(canvases[1], candles, legendEls);
       }
+      if (window.ChartCrosshair) ChartCrosshair.refresh();
     }
 
     function renderInfo(payload) {

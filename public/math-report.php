@@ -199,6 +199,7 @@ $results = $report['results'] ?? [];
       margin: 0 0 0.65rem;
     }
     .chart-wrap {
+      position: relative;
       width: 100%;
       height: 260px;
     }
@@ -378,6 +379,7 @@ $results = $report['results'] ?? [];
             <p class="note">Для каждой позиции: свечной график ТФ и график значений индикатора.</p>
             <div id="topCharts"></div>
           </div>
+          <script src="chart-crosshair.js?v=1"></script>
           <script>
             const TOP_CHARTS = <?= json_encode($topCharts, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 
@@ -446,6 +448,9 @@ $results = $report['results'] ?? [];
                 const yO = yScale(o), yC = yScale(cl);
                 ctx.fillRect(x - bodyW / 2, Math.min(yO, yC), bodyW, Math.max(1, Math.abs(yC - yO)));
               });
+              if (window.ChartCrosshair) {
+                ChartCrosshair.mark(canvas, { pad, points: candles.length });
+              }
             }
 
             function drawIndicator(canvas, indicator) {
@@ -536,6 +541,9 @@ $results = $report['results'] ?? [];
                 });
                 ctx.stroke();
               }
+              if (window.ChartCrosshair) {
+                ChartCrosshair.mark(canvas, { pad, points: n });
+              }
             }
 
             const root = document.getElementById('topCharts');
@@ -562,6 +570,7 @@ $results = $report['results'] ?? [];
               drawCandles(priceCanvas, item.candles || []);
               drawIndicator(indCanvas, item.indicator || {});
             });
+            if (window.ChartCrosshair) ChartCrosshair.refresh();
 
             window.addEventListener('resize', () => {
               for (const d of drawn) {
