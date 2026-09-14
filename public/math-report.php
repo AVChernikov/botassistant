@@ -20,8 +20,17 @@ $topCharts = [];
 
 try {
     $client = Client::mainnet(45);
+    $requests = [];
     foreach ($resolutions as $resolution) {
-        $resp = $client->candles($marketId, $resolution, countBack: $candleCount);
+        $requests[$resolution] = $client->candlesRequest(
+            $marketId,
+            $resolution,
+            countBack: $candleCount,
+        );
+    }
+    $responses = $client->getMany($requests);
+    foreach ($resolutions as $resolution) {
+        $resp = $responses[$resolution];
         $items = $resp['c'] ?? [];
         $frames[$resolution] = $items;
         $loaded[$resolution] = count($items);

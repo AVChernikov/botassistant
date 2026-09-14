@@ -219,6 +219,77 @@ final class Client
      */
     public function get(string $path, array $query = []): array
     {
+        return $this->request('GET', $this->buildUrl($path, $query));
+    }
+
+    /**
+     * Parallel GET requests (one transport round-trip on Windows).
+     *
+     * @param array<string, array{0:string,1?:array<string, scalar|null>}> $requests key => [path, query]
+     * @return array<string, array<string, mixed>>
+     */
+    public function getMany(array $requests): array
+    {
+        if ($requests === []) {
+            return [];
+        }
+
+        $urls = [];
+        foreach ($requests as $key => [$path, $query]) {
+            $urls[(string) $key] = $this->buildUrl($path, $query ?? []);
+        }
+
+        if (PHP_OS_FAMILY === 'Windows') {
+            $bodies = $this->requestManyWithPowerShell($urls);
+            $out = [];
+            foreach ($bodies as $key => [$status, $body]) {
+                $out[$key] = $this->decodeResponse($status, $body);
+            }
+            return $out;
+        }
+
+        $out = [];
+        foreach ($urls as $key => $url) {
+            $out[$key] = $this->request('GET', $url);
+        }
+        return $out;
+    }
+
+    /**
+     * Candle request URL helpers for batching.
+     *
+     * @return array{0:string,1:array<string, scalar|null>}
+     */
+    public function candlesRequest(
+        int $marketId,
+        string $resolution,
+        ?int $startTimestamp = null,
+        ?int $endTimestamp = null,
+        int $countBack = 100,
+    ): array {
+        $allowed = ['1m', '5m', '15m', '30m', '1h', '4h', '12h', '1d'];
+        if (!in_array($resolution, $allowed, true)) {
+            throw new \InvalidArgumentException('Unsupported candle resolution: ' . $resolution);
+        }
+
+        $endTimestamp ??= (int) floor(microtime(true) * 1000);
+        $startTimestamp ??= $endTimestamp - self::resolutionMs($resolution) * max(1, $countBack);
+        $countBack = max(1, min(500, $countBack));
+
+        return ['/api/v1/candles', [
+            'market_id' => $marketId,
+            'resolution' => $resolution,
+            'start_timestamp' => $startTimestamp,
+            'end_timestamp' => $endTimestamp,
+            'count_back' => $countBack,
+        ]];
+    }
+
+    /**
+     * @param array<string, scalar|null> $query
+     */
+    private function buildUrl(string $path, array $query = []): string
+    {
         $query = array_filter(
             $query,
             static fn ($value) => $value !== null && $value !== '',
@@ -229,7 +300,7 @@ final class Client
             $url .= '?' . http_build_query($query);
         }
 
-        return $this->request('GET', $url);
+        return $url;
     }
 
     /**
@@ -237,34 +308,25 @@ final class Client
      */
     private function request(string $method, string $url): array
     {
-        $ch = curl_init($url);
-        if ($ch === false) {
-            throw new ApiException('Failed to init cURL');
+        $lastError = null;
+        foreach ($this->transports() as $transport) {
+            try {
+                [$status, $body] = $transport($method, $url);
+                return $this->decodeResponse($status, $body);
+            } catch (ApiException $e) {
+                $lastError = $e;
+            }
         }
 
-        curl_setopt_array($ch, [
-            CURLOPT_CUSTOMREQUEST => $method,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_TIMEOUT => $this->timeout,
-            CURLOPT_CONNECTTIMEOUT => min(10, $this->timeout),
-            CURLOPT_HTTPHEADER => [
-                'Accept: application/json',
-                'User-Agent: ' . $this->userAgent,
-            ],
-        ]);
+        throw $lastError ?? new ApiException('Lighter API request failed');
+    }
 
-        $body = curl_exec($ch);
-        $errno = curl_errno($ch);
-        $error = curl_error($ch);
-        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($errno !== 0) {
-            throw new ApiException('cURL error: ' . $error, 0);
-        }
-
-        if (!is_string($body) || $body === '') {
+    /**
+     * @return array<string, mixed>
+     */
+    private function decodeResponse(int $status, string $body): array
+    {
+        if ($body === '') {
             throw new ApiException('Empty response from Lighter API', $status);
         }
 
@@ -293,5 +355,261 @@ final class Client
         }
 
         return $decoded;
+    }
+
+    /**
+     * @return list<callable(string,string): array{0:int,1:string}>
+     */
+    private function transports(): array
+    {
+        // On this Windows host curl/OpenSSL stall ~15KB into responses; use PowerShell only.
+        if (PHP_OS_FAMILY === 'Windows') {
+            return [
+                fn (string $method, string $url): array => $this->requestWithPowerShell($method, $url),
+            ];
+        }
+
+        $list = [];
+        if (function_exists('curl_init')) {
+            $list[] = fn (string $method, string $url): array => $this->requestWithCurl($method, $url);
+        }
+        $list[] = fn (string $method, string $url): array => $this->requestWithStream($method, $url);
+
+        return $list;
+    }
+
+    /**
+     * @param array<string, string> $urls
+     * @return array<string, array{0:int,1:string}>
+     */
+    private function requestManyWithPowerShell(array $urls): array
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'lighter_');
+        if ($tmp === false) {
+            throw new ApiException('Failed to create temp file');
+        }
+        $listFile = $tmp . '.urls.json';
+        $outFile = $tmp . '.out.json';
+        $scriptFile = $tmp . '.ps1';
+        @unlink($tmp);
+
+        $payload = [];
+        foreach ($urls as $key => $url) {
+            $payload[] = ['key' => (string) $key, 'url' => $url];
+        }
+        file_put_contents($listFile, json_encode($payload, JSON_UNESCAPED_SLASHES));
+
+        $script = <<<'PS'
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.Net.Http
+$listFile = $env:LIGHTER_LIST
+$out = $env:LIGHTER_OUT
+$ua = $env:LIGHTER_UA
+$timeout = [int]$env:LIGHTER_TIMEOUT
+$items = Get-Content -Raw -Path $listFile | ConvertFrom-Json
+$handler = [System.Net.Http.HttpClientHandler]::new()
+$client = [System.Net.Http.HttpClient]::new($handler)
+$client.Timeout = [TimeSpan]::FromSeconds($timeout)
+$client.DefaultRequestHeaders.TryAddWithoutValidation('Accept', 'application/json') | Out-Null
+$client.DefaultRequestHeaders.TryAddWithoutValidation('User-Agent', $ua) | Out-Null
+$tasks = @{}
+$urls = @{}
+foreach ($item in @($items)) {
+  $tasks[$item.key] = $client.GetAsync($item.url)
+  $urls[$item.key] = $item.url
+}
+$result = [ordered]@{}
+foreach ($key in @($tasks.Keys)) {
+  try {
+    $primary = $tasks[$key]
+    if (-not $primary.IsCompleted) {
+      $hedgeDelay = [System.Threading.Tasks.Task]::Delay(1200)
+      [System.Threading.Tasks.Task]::WhenAny(
+        [System.Threading.Tasks.Task[]]@($primary, $hedgeDelay)
+      ).GetAwaiter().GetResult() | Out-Null
+    }
+
+    if ($primary.IsCompleted) {
+      $resp = $primary.GetAwaiter().GetResult()
+    } else {
+      # Lighter occasionally stalls a request for ~17 seconds. Hedge only
+      # delayed requests, then use whichever connection completes first.
+      $retry = $client.GetAsync($urls[$key])
+      $deadline = [System.Threading.Tasks.Task]::Delay(
+        [Math]::Max(5000, [Math]::Min(12000, $timeout * 1000))
+      )
+      $winner = [System.Threading.Tasks.Task]::WhenAny(
+        [System.Threading.Tasks.Task[]]@($primary, $retry, $deadline)
+      ).GetAwaiter().GetResult()
+      if ($winner -eq $deadline) {
+        throw "Lighter request timed out"
+      }
+      $resp = $winner.GetAwaiter().GetResult()
+    }
+
+    $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    $result[$key] = @{ status = [int]$resp.StatusCode; body = $body }
+  } catch {
+    $result[$key] = @{ status = 0; body = ''; error = $_.Exception.Message }
+  }
+}
+$client.Dispose()
+$json = ($result | ConvertTo-Json -Compress -Depth 6)
+[System.IO.File]::WriteAllText($out, $json, [System.Text.UTF8Encoding]::new($false))
+PS;
+        file_put_contents($scriptFile, $script);
+
+        $env = [
+            'LIGHTER_LIST' => $listFile,
+            'LIGHTER_OUT' => $outFile,
+            'LIGHTER_UA' => $this->userAgent,
+            'LIGHTER_TIMEOUT' => (string) max(5, $this->timeout),
+        ];
+        foreach ($env as $key => $value) {
+            putenv($key . '=' . $value);
+            $_ENV[$key] = $value;
+        }
+
+        $cmd = 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' . escapeshellarg($scriptFile);
+        $statusOut = [];
+        $exitCode = 0;
+        exec($cmd, $statusOut, $exitCode);
+
+        foreach (array_keys($env) as $key) {
+            putenv($key);
+            unset($_ENV[$key]);
+        }
+        @unlink($scriptFile);
+        @unlink($listFile);
+
+        $raw = is_file($outFile) ? (string) file_get_contents($outFile) : '';
+        if (is_file($outFile)) {
+            @unlink($outFile);
+        }
+        if (str_starts_with($raw, "\xEF\xBB\xBF")) {
+            $raw = substr($raw, 3);
+        }
+        if ($raw === '') {
+            throw new ApiException('PowerShell batch HTTP error', 0);
+        }
+
+        try {
+            /** @var mixed $decoded */
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            throw new ApiException('Invalid batch JSON: ' . $e->getMessage(), 0, ['raw' => $raw], $e);
+        }
+        if (!is_array($decoded)) {
+            throw new ApiException('Unexpected batch payload', 0);
+        }
+
+        $out = [];
+        foreach ($urls as $key => $_url) {
+            $row = $decoded[$key] ?? null;
+            if (!is_array($row)) {
+                throw new ApiException('Missing batch result for ' . $key, 0);
+            }
+            $out[$key] = [(int) ($row['status'] ?? 0), (string) ($row['body'] ?? '')];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @return array{0:int,1:string}
+     */
+    private function requestWithPowerShell(string $method, string $url): array
+    {
+        if ($method !== 'GET') {
+            throw new ApiException('PowerShell transport supports GET only');
+        }
+
+        $results = $this->requestManyWithPowerShell(['r' => $url]);
+        return $results['r'];
+    }
+
+    /**
+     * @return array{0:int,1:string}
+     */
+    private function requestWithCurl(string $method, string $url): array
+    {
+        $ch = \curl_init($url);
+        if ($ch === false) {
+            throw new ApiException('Failed to init cURL');
+        }
+
+        $opts = [
+            \CURLOPT_CUSTOMREQUEST => $method,
+            \CURLOPT_RETURNTRANSFER => true,
+            \CURLOPT_FOLLOWLOCATION => true,
+            \CURLOPT_TIMEOUT => $this->timeout,
+            \CURLOPT_CONNECTTIMEOUT => min(10, $this->timeout),
+            \CURLOPT_IPRESOLVE => \CURL_IPRESOLVE_V4,
+            \CURLOPT_HTTPHEADER => [
+                'Accept: application/json',
+                'User-Agent: ' . $this->userAgent,
+            ],
+        ];
+
+        $cafile = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'cacert.pem';
+        if (is_file($cafile)) {
+            $opts[\CURLOPT_CAINFO] = $cafile;
+        }
+
+        \curl_setopt_array($ch, $opts);
+
+        $body = \curl_exec($ch);
+        $errno = \curl_errno($ch);
+        $error = \curl_error($ch);
+        $status = (int) \curl_getinfo($ch, \CURLINFO_HTTP_CODE);
+        \curl_close($ch);
+
+        if ($errno !== 0) {
+            throw new ApiException('cURL error: ' . $error, 0);
+        }
+
+        return [$status, is_string($body) ? $body : ''];
+    }
+
+    /**
+     * @return array{0:int,1:string}
+     */
+    private function requestWithStream(string $method, string $url): array
+    {
+        $ssl = [
+            'verify_peer' => true,
+            'verify_peer_name' => true,
+        ];
+        $cafile = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'cacert.pem';
+        if (is_file($cafile)) {
+            $ssl['cafile'] = $cafile;
+        }
+
+        $context = stream_context_create([
+            'http' => [
+                'method' => $method,
+                'header' => "Accept: application/json\r\nUser-Agent: {$this->userAgent}\r\n",
+                'timeout' => $this->timeout,
+                'ignore_errors' => true,
+                'follow_location' => 1,
+            ],
+            'ssl' => $ssl,
+        ]);
+
+        $body = @file_get_contents($url, false, $context);
+        if ($body === false) {
+            $err = error_get_last();
+            throw new ApiException('HTTP error: ' . ($err['message'] ?? 'request failed'), 0);
+        }
+
+        $status = 0;
+        foreach ($http_response_header ?? [] as $headerLine) {
+            if (preg_match('/^HTTP\/\S+\s+(\d+)/', $headerLine, $m) === 1) {
+                $status = (int) $m[1];
+            }
+        }
+
+        return [$status, $body];
     }
 }

@@ -369,6 +369,7 @@ declare(strict_types=1);
     </div>
   </div>
 
+  <script src="lighter-api.js?v=1"></script>
   <script>
     const els = {
       market: document.getElementById('market'),
@@ -424,6 +425,13 @@ declare(strict_types=1);
     }
 
     async function api(action, params = {}) {
+      try {
+        if (action === 'markets') return await LighterPublicApi.markets(params);
+        if (action === 'market') return await LighterPublicApi.market(params);
+      } catch (directError) {
+        console.warn('Direct Lighter request failed; using local fallback.', directError);
+      }
+
       const q = new URLSearchParams({ action, ...params });
       const res = await fetch('api.php?' + q.toString());
       const data = await res.json();

@@ -243,6 +243,7 @@ declare(strict_types=1);
     </div>
   </div>
 
+  <script src="lighter-api.js?v=1"></script>
   <script>
     const MARKET_ID = 1;
     const RESOLUTIONS = ['1d', '4h', '1h', '30m', '15m', '5m', '1m'];
@@ -284,6 +285,12 @@ declare(strict_types=1);
     }
 
     async function api(action, params = {}) {
+      try {
+        if (action === 'btc_analyze') return await LighterPublicApi.btcAnalyze(params);
+      } catch (directError) {
+        console.warn('Direct Lighter request failed; using local fallback.', directError);
+      }
+
       const q = new URLSearchParams({ action, ...params });
       const res = await fetch('api.php?' + q.toString());
       const data = await res.json();

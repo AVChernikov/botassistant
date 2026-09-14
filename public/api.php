@@ -5,6 +5,9 @@ declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 
+@ini_set('max_execution_time', '120');
+@set_time_limit(120);
+
 require dirname(__DIR__) . '/vendor/autoload.php';
 
 use Lighter\Client;
@@ -22,7 +25,7 @@ $action = $_GET['action'] ?? '';
 $network = ($_GET['network'] ?? 'mainnet') === 'testnet' ? 'testnet' : 'mainnet';
 
 try {
-    $client = $network === 'testnet' ? Client::testnet() : Client::mainnet();
+    $client = $network === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
 
     switch ($action) {
         case 'markets':
@@ -62,13 +65,17 @@ try {
                 $resolution = '1h';
             }
 
-            $books = $client->orderBooks(marketId: $marketId);
-            $market = ($books['order_books'] ?? [])[0] ?? null;
-            $details = $client->orderBookDetails(marketId: $marketId);
-            $orderBook = $client->orderBookOrders($marketId, limit: $depth);
-            $trades = $client->recentTrades($marketId, limit: $tradesLimit);
-            $candles = $client->candles($marketId, $resolution, countBack: $candleCount);
-            $stats = $client->exchangeStats();
+            $bundle = $client->getMany([
+                'details' => ['/api/v1/orderBookDetails', ['market_id' => $marketId]],
+                'order_book' => ['/api/v1/orderBookOrders', ['market_id' => $marketId, 'limit' => $depth]],
+                'trades' => ['/api/v1/recentTrades', ['market_id' => $marketId, 'limit' => $tradesLimit]],
+                'candles' => $client->candlesRequest($marketId, $resolution, countBack: $candleCount),
+                'stats' => ['/api/v1/exchangeStats', []],
+            ]);
+
+            $market = ($bundle['details']['order_book_details'] ?? [])[0] ?? null;
+            $candles = $bundle['candles'];
+            $stats = $bundle['stats'];
 
             $symbol = $market['symbol'] ?? null;
             $marketStats = null;
@@ -85,9 +92,9 @@ try {
                 'ok' => true,
                 'network' => $network,
                 'market' => $market,
-                'details' => $details,
-                'order_book' => $orderBook,
-                'trades' => $trades['trades'] ?? [],
+                'details' => $bundle['details'],
+                'order_book' => $bundle['order_book'],
+                'trades' => $bundle['trades']['trades'] ?? [],
                 'candles' => [
                     'resolution' => $candles['r'] ?? $resolution,
                     'items' => $candles['c'] ?? [],
@@ -109,16 +116,22 @@ try {
             $tradesLimit = $tradesLimit === false ? 25 : max(1, min(100, $tradesLimit));
 
             $resolutions = ['1d', '4h', '1h', '30m', '15m', '5m', '1m'];
-            $books = $client->orderBooks(marketId: $marketId);
-            $market = ($books['order_books'] ?? [])[0] ?? null;
-            $details = $client->orderBookDetails(marketId: $marketId);
-            $orderBook = $client->orderBookOrders($marketId, limit: $depth);
-            $trades = $client->recentTrades($marketId, limit: $tradesLimit);
-            $stats = $client->exchangeStats();
+            $requests = [
+                'details' => ['/api/v1/orderBookDetails', ['market_id' => $marketId]],
+                'order_book' => ['/api/v1/orderBookOrders', ['market_id' => $marketId, 'limit' => $depth]],
+                'trades' => ['/api/v1/recentTrades', ['market_id' => $marketId, 'limit' => $tradesLimit]],
+                'stats' => ['/api/v1/exchangeStats', []],
+            ];
+            foreach ($resolutions as $resolution) {
+                $requests['c_' . $resolution] = $client->candlesRequest($marketId, $resolution, countBack: $candleCount);
+            }
+            $bundle = $client->getMany($requests);
 
+            $market = ($bundle['details']['order_book_details'] ?? [])[0] ?? null;
+            $stats = $bundle['stats'];
             $frames = [];
             foreach ($resolutions as $resolution) {
-                $candles = $client->candles($marketId, $resolution, countBack: $candleCount);
+                $candles = $bundle['c_' . $resolution];
                 $frames[] = [
                     'resolution' => $candles['r'] ?? $resolution,
                     'items' => $candles['c'] ?? [],
@@ -138,9 +151,9 @@ try {
                 'ok' => true,
                 'network' => 'mainnet',
                 'market' => $market,
-                'details' => $details,
-                'order_book' => $orderBook,
-                'trades' => $trades['trades'] ?? [],
+                'details' => $bundle['details'],
+                'order_book' => $bundle['order_book'],
+                'trades' => $bundle['trades']['trades'] ?? [],
                 'frames' => $frames,
                 'market_stats' => $marketStats,
                 'exchange' => [
@@ -167,13 +180,18 @@ try {
             $depth = $depth === false ? 15 : max(1, min(100, $depth));
             $tradesLimit = $tradesLimit === false ? 25 : max(1, min(100, $tradesLimit));
 
-            $books = $client->orderBooks(marketId: $marketId);
-            $market = ($books['order_books'] ?? [])[0] ?? null;
-            $orderBook = $client->orderBookOrders($marketId, limit: $depth);
-            $trades = $client->recentTrades($marketId, limit: $tradesLimit);
-            $candlesResp = $client->candles($marketId, $resolution, countBack: $candleCount);
+            $bundle = $client->getMany([
+                'details' => ['/api/v1/orderBookDetails', ['market_id' => $marketId]],
+                'order_book' => ['/api/v1/orderBookOrders', ['market_id' => $marketId, 'limit' => $depth]],
+                'trades' => ['/api/v1/recentTrades', ['market_id' => $marketId, 'limit' => $tradesLimit]],
+                'candles' => $client->candlesRequest($marketId, $resolution, countBack: $candleCount),
+                'stats' => ['/api/v1/exchangeStats', []],
+            ]);
+
+            $market = ($bundle['details']['order_book_details'] ?? [])[0] ?? null;
+            $candlesResp = $bundle['candles'];
             $candles = $candlesResp['c'] ?? [];
-            $stats = $client->exchangeStats();
+            $stats = $bundle['stats'];
             $symbol = $market['symbol'] ?? null;
             $marketStats = null;
             if ($symbol !== null) {
@@ -191,8 +209,8 @@ try {
                 'method' => $method,
                 'resolution' => $candlesResp['r'] ?? $resolution,
                 'market' => $market,
-                'order_book' => $orderBook,
-                'trades' => $trades['trades'] ?? [],
+                'order_book' => $bundle['order_book'],
+                'trades' => $bundle['trades']['trades'] ?? [],
                 'candles' => $candles,
                 'indicator' => TechnicalAnalysis::indicatorChartData($candles, $method),
                 'market_stats' => $marketStats,
