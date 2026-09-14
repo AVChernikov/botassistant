@@ -1,0 +1,15 @@
+{
+    "name": "botassistant/lighter-php",
+    "description": "PHP client for the public Lighter (zkLighter) REST API",
+    "type": "library",
+    "require": {
+        "php": ">=8.1",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Lighter\\": "src/Lighter/"
+        }
+    }
+}
