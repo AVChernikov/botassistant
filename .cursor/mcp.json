@@ -1,0 +1,13 @@
+﻿{
+  "mcpServers": {
+    "lighter-perps": {
+      "command": "C:\\Users\\teams\\Desktop\\cursor\\botassistant\\mcp-lighter\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\teams\\Desktop\\cursor\\botassistant\\mcp-lighter\\server.py"
+      ],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

@@ -19,9 +19,22 @@ final class TechnicalAnalysis
         'Momentum(10) flip',
     ];
 
+    /** Value metrics (no directional signal); listed in config/indicators.env */
+    public const VOLATILITY_METHODS = [
+        'ATR(14) pct',
+        'RV(48) log',
+        'Bollinger(20,2) width',
+    ];
+
     public static function isKnownMethod(string $method): bool
     {
-        return in_array($method, self::METHODS, true);
+        return in_array($method, self::METHODS, true)
+            || in_array($method, self::VOLATILITY_METHODS, true);
+    }
+
+    public static function isVolatilityMethod(string $method): bool
+    {
+        return in_array($method, self::VOLATILITY_METHODS, true);
     }
 
     /**
@@ -31,6 +44,179 @@ final class TechnicalAnalysis
     public static function closes(array $candles): array
     {
         return array_map(static fn (array $c): float => (float) $c['c'], $candles);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $candles
+     * @return list<float>
+     */
+    public static function highs(array $candles): array
+    {
+        return array_map(static fn (array $c): float => (float) ($c['h'] ?? $c['c']), $candles);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $candles
+     * @return list<float>
+     */
+    public static function lows(array $candles): array
+    {
+        return array_map(static fn (array $c): float => (float) ($c['l'] ?? $c['c']), $candles);
+    }
+
+    /**
+     * Candle open time in ms (best-effort).
+     *
+     * @param list<array<string, mixed>> $candles
+     * @return list<int>
+     */
+    public static function timestamps(array $candles): array
+    {
+        $out = [];
+        foreach ($candles as $c) {
+            $t = (int) ($c['t'] ?? $c['timestamp'] ?? 0);
+            if ($t > 0 && $t < 1_000_000_000_000) {
+                $t *= 1000;
+            }
+            $out[] = $t;
+        }
+
+        return $out;
+    }
+
+    /**
+     * True range series (index 0 = null).
+     *
+     * @param list<float> $highs
+     * @param list<float> $lows
+     * @param list<float> $closes
+     * @return list<float|null>
+     */
+    public static function trueRange(array $highs, array $lows, array $closes): array
+    {
+        $n = count($closes);
+        $out = array_fill(0, $n, null);
+        for ($i = 1; $i < $n; $i++) {
+            $out[$i] = max(
+                $highs[$i] - $lows[$i],
+                abs($highs[$i] - $closes[$i - 1]),
+                abs($lows[$i] - $closes[$i - 1]),
+            );
+        }
+
+        return $out;
+    }
+
+    /**
+     * ATR as SMA of true range.
+     *
+     * @param list<array<string, mixed>> $candles
+     * @return list<float|null>
+     */
+    public static function atr(array $candles, int $period = 14): array
+    {
+        $tr = self::trueRange(self::highs($candles), self::lows($candles), self::closes($candles));
+        $vals = [];
+        $map = [];
+        foreach ($tr as $i => $v) {
+            if ($v !== null) {
+                $map[] = $i;
+                $vals[] = $v;
+            }
+        }
+        $sma = self::sma($vals, $period);
+        $n = count($tr);
+        $out = array_fill(0, $n, null);
+        foreach ($map as $j => $idx) {
+            $out[$idx] = $sma[$j];
+        }
+
+        return $out;
+    }
+
+    /**
+     * ATR as % of close.
+     *
+     * @param list<array<string, mixed>> $candles
+     * @return list<float|null>
+     */
+    public static function atrPct(array $candles, int $period = 14): array
+    {
+        $atr = self::atr($candles, $period);
+        $closes = self::closes($candles);
+        $n = count($closes);
+        $out = array_fill(0, $n, null);
+        for ($i = 0; $i < $n; $i++) {
+            if ($atr[$i] !== null && $closes[$i] != 0.0) {
+                $out[$i] = ($atr[$i] / $closes[$i]) * 100.0;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Rolling stdev of log returns (not annualized), in percent.
+     *
+     * @param list<float> $closes
+     * @return list<float|null>
+     */
+    public static function realizedVolLog(array $closes, int $window = 48): array
+    {
+        $n = count($closes);
+        $out = array_fill(0, $n, null);
+        if ($window < 2 || $n < $window + 1) {
+            return $out;
+        }
+        $logs = array_fill(0, $n, null);
+        for ($i = 1; $i < $n; $i++) {
+            if ($closes[$i - 1] > 0.0 && $closes[$i] > 0.0) {
+                $logs[$i] = log($closes[$i] / $closes[$i - 1]);
+            }
+        }
+        for ($i = $window; $i < $n; $i++) {
+            $slice = [];
+            for ($j = $i - $window + 1; $j <= $i; $j++) {
+                if ($logs[$j] !== null) {
+                    $slice[] = $logs[$j];
+                }
+            }
+            if (count($slice) < max(2, (int) floor($window * 0.8))) {
+                continue;
+            }
+            $mean = array_sum($slice) / count($slice);
+            $var = 0.0;
+            foreach ($slice as $v) {
+                $var += ($v - $mean) ** 2;
+            }
+            $std = sqrt($var / count($slice));
+            $out[$i] = $std * 100.0;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Bollinger band width = (upper-lower)/mid.
+     *
+     * @param list<float> $closes
+     * @return list<float|null>
+     */
+    public static function bollingerWidth(array $closes, int $period = 20, float $mult = 2.0): array
+    {
+        $bb = self::bollinger($closes, $period, $mult);
+        $n = count($closes);
+        $out = array_fill(0, $n, null);
+        for ($i = 0; $i < $n; $i++) {
+            $mid = $bb['mid'][$i];
+            $up = $bb['upper'][$i];
+            $lo = $bb['lower'][$i];
+            if ($mid !== null && $up !== null && $lo !== null && $mid != 0.0) {
+                $out[$i] = ($up - $lo) / $mid;
+            }
+        }
+
+        return $out;
     }
 
     /**

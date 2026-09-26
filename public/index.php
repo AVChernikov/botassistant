@@ -227,7 +227,7 @@ declare(strict_types=1);
     .chart-wrap {
       position: relative;
       width: 100%;
-      height: 340px;
+      height: 380px;
     }
     .chart-wrap.macd {
       height: 180px;
@@ -272,7 +272,11 @@ declare(strict_types=1);
         <div class="brand">botassistant <span>· Lighter</span></div>
         <p class="subtitle">Выберите инструмент и загрузите стакан, сделки, свечи и дневную статистику из публичного API.</p>
       </div>
-      <div class="nav" style="margin-top:.35rem"><a href="btc.php" style="color:var(--accent);font-weight:600;text-decoration:none">BTC #1 анализ →</a></div>
+      <div class="nav" style="margin-top:.35rem">
+        <a href="btc.php" style="color:var(--accent);font-weight:600;text-decoration:none">BTC #1</a>
+        <span style="color:var(--muted);margin:0 .35rem">·</span>
+        <a href="lit.php" style="color:var(--accent);font-weight:600;text-decoration:none">LIT #120 →</a>
+      </div>
     </header>
 
     <form class="controls" id="controls">
@@ -371,6 +375,7 @@ declare(strict_types=1);
 
   <script src="lighter-api.js?v=1"></script>
   <script src="chart-crosshair.js?v=1"></script>
+  <script src="chart-candles.js?v=1"></script>
   <script>
     const els = {
       market: document.getElementById('market'),
@@ -642,95 +647,15 @@ declare(strict_types=1);
     function drawCandleChart(candles) {
       lastCandles = candles;
       const canvas = els.chart;
-      if (!canvas) return;
-      const { ctx, cssW, cssH } = prepareCanvas(canvas);
-
-      if (!candles.length) {
-        ctx.fillStyle = '#5c6b61';
-        ctx.font = '14px Manrope, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('Нет данных для графика', cssW / 2, cssH / 2);
-        return;
-      }
-
-      const pad = { top: 16, right: 64, bottom: 36, left: 12 };
-      const plotW = cssW - pad.left - pad.right;
-      const plotH = cssH - pad.top - pad.bottom;
-
-      let min = Infinity;
-      let max = -Infinity;
-      for (const c of candles) {
-        min = Math.min(min, Number(c.l));
-        max = Math.max(max, Number(c.h));
-      }
-      const padY = (max - min) * 0.06 || max * 0.001 || 1;
-      min -= padY;
-      max += padY;
-
-      const yScale = (price) => pad.top + ((max - price) / (max - min)) * plotH;
-      const slot = plotW / candles.length;
-      const bodyW = Math.max(2, Math.min(18, slot * 0.62));
-
-      ctx.strokeStyle = '#d5ddd7';
-      ctx.fillStyle = '#5c6b61';
-      ctx.font = '11px "IBM Plex Mono", monospace';
-      ctx.textAlign = 'left';
-      const steps = 4;
-      for (let i = 0; i <= steps; i++) {
-        const price = max - ((max - min) * i) / steps;
-        const y = yScale(price);
-        ctx.beginPath();
-        ctx.moveTo(pad.left, y);
-        ctx.lineTo(cssW - pad.right, y);
-        ctx.stroke();
-        ctx.fillText(fmt(price, 2), cssW - pad.right + 8, y + 4);
-      }
-
-      const upColor = '#0f6b4c';
-      const downColor = '#b42318';
-
-      candles.forEach((c, i) => {
-        const o = Number(c.o);
-        const h = Number(c.h);
-        const l = Number(c.l);
-        const cl = Number(c.c);
-        const up = cl >= o;
-        const color = up ? upColor : downColor;
-        const x = pad.left + slot * i + slot / 2;
-        const yO = yScale(o);
-        const yC = yScale(cl);
-        const yH = yScale(h);
-        const yL = yScale(l);
-        const bodyTop = Math.min(yO, yC);
-        const bodyH = Math.max(1, Math.abs(yC - yO));
-
-        ctx.strokeStyle = color;
-        ctx.fillStyle = color;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(x, yH);
-        ctx.lineTo(x, yL);
-        ctx.stroke();
-        ctx.fillRect(x - bodyW / 2, bodyTop, bodyW, bodyH);
+      if (!canvas || !window.ChartCandles) return;
+      ChartCandles.draw(canvas, candles, {
+        padTop: 16,
+        padRight: 64,
+        padBottom: 28,
+        padLeft: 12,
+        maxBody: 18,
+        emptyText: 'Нет данных для графика',
       });
-
-      ctx.fillStyle = '#5c6b61';
-      ctx.font = '11px "IBM Plex Mono", monospace';
-      ctx.textAlign = 'center';
-      const labelIdx = [0, Math.floor((candles.length - 1) / 2), candles.length - 1];
-      const seen = new Set();
-      for (const i of labelIdx) {
-        if (seen.has(i)) continue;
-        seen.add(i);
-        const x = pad.left + slot * i + slot / 2;
-        const label = new Date(Number(candles[i].t)).toLocaleString('ru-RU', {
-          day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
-        });
-        ctx.fillText(label, x, cssH - 12);
-      }
-      if (window.ChartCrosshair) {
-        ChartCrosshair.mark(canvas, { pad, points: candles.length });
-      }
     }
 
     function drawMacdChart(candles) {

@@ -171,6 +171,80 @@ final class Client
         ]);
     }
 
+    /**
+     * Build paginated candle requests (API max 500 per call).
+     *
+     * @return array<string, array{0:string,1:array<string, scalar|null>}>
+     */
+    public function candlesHistoryRequests(
+        int $marketId,
+        string $resolution,
+        int $countBack = 200,
+        ?int $endTimestamp = null,
+    ): array {
+        $allowed = ['1m', '5m', '15m', '30m', '1h', '4h', '12h', '1d'];
+        if (!in_array($resolution, $allowed, true)) {
+            throw new \InvalidArgumentException('Unsupported candle resolution: ' . $resolution);
+        }
+
+        $countBack = max(1, min(2000, $countBack));
+        $endTimestamp ??= (int) floor(microtime(true) * 1000);
+        $step = self::resolutionMs($resolution);
+        $requests = [];
+        $remaining = $countBack;
+        $cursorEnd = $endTimestamp;
+        $page = 0;
+
+        while ($remaining > 0) {
+            $batch = min(500, $remaining);
+            $start = $cursorEnd - $step * max(1, $batch);
+            $requests['p' . $page] = ['/api/v1/candles', [
+                'market_id' => $marketId,
+                'resolution' => $resolution,
+                'start_timestamp' => $start,
+                'end_timestamp' => $cursorEnd,
+                'count_back' => $batch,
+            ]];
+            $cursorEnd = $start - 1;
+            $remaining -= $batch;
+            $page++;
+        }
+
+        return $requests;
+    }
+
+    /**
+     * Merge candle pages and keep the newest $limit bars (oldest -> newest).
+     *
+     * @param list<array<string, mixed>> $pages
+     * @return list<array<string, mixed>>
+     */
+    public static function mergeCandlePages(array $pages, int $limit): array
+    {
+        $byT = [];
+        foreach ($pages as $page) {
+            foreach ($page['c'] ?? [] as $candle) {
+                if (!is_array($candle)) {
+                    continue;
+                }
+                $t = $candle['t'] ?? null;
+                if ($t === null || $t === '') {
+                    continue;
+                }
+                $byT[(string) $t] = $candle;
+            }
+        }
+
+        ksort($byT, SORT_NUMERIC);
+        $all = array_values($byT);
+        $limit = max(1, $limit);
+        if (count($all) > $limit) {
+            $all = array_slice($all, -$limit);
+        }
+
+        return $all;
+    }
+
     private static function resolutionMs(string $resolution): int
     {
         return match ($resolution) {

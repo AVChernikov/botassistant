@@ -1,0 +1,80 @@
+---
+description: Every 2 min — TG queue + position + snapshot + DeepSeek report → trade for max profit
+alwaysApply: true
+---
+
+# Agent 2m tick: Telegram + market decision
+
+## Cadence
+
+- Recurring `/loop 2m` (monitored shell `AGENT_LOOP_TICK_tg_queue`) while this session is active.
+- Schtask `botassistant-tg-queue-2m` only refreshes inbox — **this agent** decides and trades.
+
+## Working directory
+
+```
+cd mcp-lighter
+.\.venv\Scripts\python.exe
+```
+
+Repo root for PHP: `c:\Users\teams\Desktop\cursor\botassistant`
+
+## Tick procedure (every 2 min) — do in order
+
+### A. Telegram queue
+
+1. `tg_queue.py --pending` (and/or `_tg_agent_inbox.json`).
+2. Pending → handle → reply via `telegram_notify.py` → `--ack <id>`.
+3. Empty TG → no Cursor spam from TG alone.
+
+### B. Position
+
+1. MCP `user-lighter-perps` → `get_positions` (and `get_account` if needed).
+2. Optional: `telegram_notify.py --position-report --dry-run` or `trading_status.py`.
+3. Track session PnL in `_lit_session_state.json`. Kill-switch: net **≥ +$100** or **≤ -$50** → stop new opens (close only if user asks).
+
+### C. Snapshot (indicators)
+
+1. Run snapshot only (fast):  
+   `php scripts\indicators_tick_cli.php`  
+   from repo root (not full DeepSeek pipeline every tick).
+2. Full pipeline `indicators_pipeline_cli.php` is already on schtask ~5m — do **not** duplicate every 2m unless report is stale (>10m) and decision needs a fresh AI pass.
+
+### D. DeepSeek market report
+
+1. Latest report:  
+   `.\.venv\Scripts\python.exe indicator_report.py --list --limit 1`  
+   or API `indicators_report` / DB via `indicator_report.py --get <id>`.
+2. Compare `id` / `created_at` to `_agent_trade_state.json` → `last_report_id`.
+3. If **updated** → read full report (summary + findings + actions).
+4. If not updated → reuse last conclusions; still re-check live position + latest indicator signals from snapshot/trading_status.
+
+### E. Optional DeepSeek clarify (≤ 3 per tick)
+
+- Only if direction is unclear or risk is high.
+- API: `POST api.php?action=indicators_report` body  
+  `{"op":"clarify","report_id":N,"question":"...","market_id":120}`  
+  or `IndicatorAnalyzer::clarify` via PHP/Python helpers if present.
+- Hard cap: **max 3 clarify calls per tick**. Prefer 0–1.
+
+### F. Trade decision (goal: maximize profit)
+
+1. From report + live indicators + position, pick: **long / short / flat / hold**.
+2. Prefer high return / profit-factor / recent signal agreement across TFs; avoid fighting strong multi-TF consensus.
+3. Act via MCP (`open_long` / `open_short` / `close_position` / `place_tp_sl`):
+   - Instrument: **LIT** (`market_id` **120**).
+   - Base lot **`$200`**. After drawdown / SL: may raise lot up to **`$400`** (see `_lit_session_state.json`).
+   - After open: TP 50% / SL 30% from entry.
+   - Same-side already open → do not add; opposite → flip (close then open).
+4. ROC/SMA auto-loops may stay paused (`_tg_control.json`); **this agent** is the discretionary trader unless user says `стоп`.
+5. Persist decision in `_agent_trade_state.json` (`last_report_id`, `side`, `reason`, `ts`).
+6. Short Telegram note when you **open/flip/close** or when TG asked; silent hold otherwise.
+
+## Cursor chat
+
+- Reply in Cursor when: TG command handled, trade taken, error, or user asked.
+- Pure idle tick (no TG, no trade) → stay quiet.
+
+## Secrets
+
+Never paste `.env` / API keys into Telegram or chat.

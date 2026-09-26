@@ -126,8 +126,8 @@
     };
   }
 
-  async function btcAnalyze(params = {}) {
-    const marketId = 1;
+  async function marketAnalyze(params = {}) {
+    const marketId = Math.max(0, Number(params.market_id) || 1);
     const network = 'mainnet';
     const depth = Math.max(1, Math.min(100, Number(params.depth) || 15));
     const tradesLimit = Math.max(1, Math.min(100, Number(params.trades) || 25));
@@ -164,5 +164,9 @@
     };
   }
 
-  window.LighterPublicApi = { markets, market, btcAnalyze };
+  async function btcAnalyze(params = {}) {
+    return marketAnalyze({ ...params, market_id: 1 });
+  }
+
+  window.LighterPublicApi = { markets, market, btcAnalyze, marketAnalyze };
 })();

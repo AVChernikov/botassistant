@@ -9,3 +9,17 @@
 /.vscode/
 /php.ini
 /cacert.pem
+/mcp-lighter/.venv/
+/mcp-lighter/.env
+/mcp-lighter/**/__pycache__/
+/mcp-lighter/_tg_queue.json
+/mcp-lighter/_tg_control.json
+/mcp-lighter/_tg_agent_inbox.json
+/mcp-lighter/_lit_session_state.json
+/mcp-lighter/_agent_trade_state.json
+/mcp-lighter/_charts/
+/mcp-lighter/_*.txt
+/mcp-lighter/_*.log
+*.pyc
+/data/
+/config/indicators.env
