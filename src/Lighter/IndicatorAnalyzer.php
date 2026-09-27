@@ -55,7 +55,7 @@ PROMPT;
         $t0 = microtime(true);
         $compact = IndicatorCompact::build($dbPath, $marketId, $events);
         $compactJson = json_encode($compact, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        $ds = new DeepSeekClient(null, $dbPath, [
+        $ds = new DeepSeekClient(DeepSeekClient::modelFor('analyze'), $dbPath, [
             'purpose' => 'analyze',
             'market_id' => $marketId,
             'meta' => ['events' => $events],
@@ -115,7 +115,7 @@ PROMPT;
     }
 
     /**
-     * Уточняющий запрос к Flash по уже сохранённому отчёту (пишется в deepseek_queries).
+     * Уточняющий запрос к DeepSeek Pro (2m loop) по сохранённому отчёту.
      *
      * @return array<string, mixed>
      */
@@ -139,7 +139,7 @@ PROMPT;
             'findings' => $report['findings'] ?? $report['findings_json'] ?? null,
         ], JSON_UNESCAPED_UNICODE);
 
-        $ds = new DeepSeekClient(null, $dbPath, [
+        $ds = new DeepSeekClient(DeepSeekClient::modelFor('clarify'), $dbPath, [
             'purpose' => 'clarify',
             'market_id' => $marketId,
             'report_id' => $reportId,

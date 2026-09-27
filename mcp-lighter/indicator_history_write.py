@@ -1,61 +1,14 @@
 #!/usr/bin/env python3
-"""Replace-snapshot / read indicator history SQLite (used by PHP endpoint)."""
+"""Replace-snapshot / read indicator history (MySQL via db.py)."""
 from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
 import time
 from pathlib import Path
 
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS indicator_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    market_id INTEGER NOT NULL,
-    symbol TEXT,
-    resolution TEXT NOT NULL,
-    bar_ts INTEGER NOT NULL,
-    indicator TEXT NOT NULL,
-    value REAL,
-    signal INTEGER,
-    close REAL,
-    created_at INTEGER NOT NULL,
-    UNIQUE(market_id, resolution, bar_ts, indicator)
-);
-CREATE INDEX IF NOT EXISTS idx_ind_snap_lookup
-    ON indicator_snapshots(market_id, resolution, indicator, bar_ts DESC);
-
-CREATE TABLE IF NOT EXISTS indicator_stats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    market_id INTEGER NOT NULL,
-    symbol TEXT,
-    resolution TEXT NOT NULL,
-    indicator TEXT NOT NULL,
-    bar_ts INTEGER,
-    strategy_return_pct REAL,
-    profit_factor REAL,
-    accuracy REAL,
-    signals INTEGER,
-    wins INTEGER,
-    losses INTEGER,
-    last_signal INTEGER,
-    last_value REAL,
-    created_at INTEGER NOT NULL,
-    UNIQUE(market_id, resolution, indicator)
-);
-CREATE INDEX IF NOT EXISTS idx_ind_stats_lookup
-    ON indicator_stats(market_id, resolution, strategy_return_pct DESC);
-"""
-
-
-def connect(db_path: str) -> sqlite3.Connection:
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(db_path)
-    con.execute("PRAGMA journal_mode=WAL;")
-    con.executescript(SCHEMA)
-    return con
+from db import connect
 
 
 def write_payload(path: str) -> dict:
@@ -149,8 +102,6 @@ def write_payload(path: str) -> dict:
 
 
 def read_rows(db_path: str, limit: int, market_id: int | None, resolution: str | None) -> dict:
-    if not Path(db_path).is_file():
-        return {"ok": True, "rows": [], "stats": []}
     con = connect(db_path)
     try:
         sql = """
@@ -168,8 +119,7 @@ def read_rows(db_path: str, limit: int, market_id: int | None, resolution: str |
         sql += " ORDER BY bar_ts DESC, indicator ASC LIMIT ?"
         args.append(limit)
         cur = con.execute(sql, args)
-        cols = [d[0] for d in cur.description]
-        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        rows = [dict(row) for row in cur.fetchall()]
 
         sql2 = """
             SELECT market_id, symbol, resolution, indicator, bar_ts,
@@ -187,8 +137,7 @@ def read_rows(db_path: str, limit: int, market_id: int | None, resolution: str |
             args2.append(resolution)
         sql2 += " ORDER BY CASE WHEN strategy_return_pct IS NULL THEN 1 ELSE 0 END, strategy_return_pct DESC, indicator ASC"
         cur2 = con.execute(sql2, args2)
-        cols2 = [d[0] for d in cur2.description]
-        stats = [dict(zip(cols2, row)) for row in cur2.fetchall()]
+        stats = [dict(row) for row in cur2.fetchall()]
         return {"ok": True, "rows": rows, "stats": stats}
     finally:
         con.close()

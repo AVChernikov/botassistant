@@ -39,7 +39,12 @@ def telegram_config() -> tuple[str, str]:
     return token, chat_id
 
 
-def send_message(text: str, *, parse_mode: Optional[str] = None) -> dict[str, Any]:
+def send_message(
+    text: str,
+    *,
+    parse_mode: Optional[str] = None,
+    log_source: str = "bot",
+) -> dict[str, Any]:
     token, chat_id = telegram_config()
     payload: dict[str, Any] = {
         "chat_id": chat_id,
@@ -54,7 +59,21 @@ def send_message(text: str, *, parse_mode: Optional[str] = None) -> dict[str, An
             with httpx.Client(timeout=30) as client:
                 r = client.post(f"{TG_API}/bot{token}/sendMessage", json=payload)
                 r.raise_for_status()
-                return r.json()
+                data = r.json()
+            try:
+                from tg_chat import log_out
+
+                result = (data or {}).get("result") or {}
+                mid = result.get("message_id")
+                log_out(
+                    text,
+                    chat_id=str(chat_id),
+                    tg_message_id=int(mid) if mid is not None else None,
+                    source=log_source,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return data
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             __import__("time").sleep(1.5 * (attempt + 1))

@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sqlite3
 import time
 from pathlib import Path
 
+from db import DEFAULT_DSN, connect
+
 ROOT = Path(__file__).resolve().parent
-DEFAULT_DB = ROOT.parent / "data" / "indicator_history.sqlite"
+DEFAULT_DB = DEFAULT_DSN
 SESSION = ROOT / "_lit_session_state.json"
 CONTROL = ROOT / "_tg_control.json"
 
@@ -42,11 +43,11 @@ def _notional(p: dict) -> float:
         return 0.0
 
 
-def _indicators_from_db(db_path: Path, market_id: int = 120) -> dict:
-    if not db_path.is_file():
-        return {"ok": False, "error": "db missing", "by_tf": {}, "stats": []}
-    con = sqlite3.connect(str(db_path))
-    con.row_factory = sqlite3.Row
+def _indicators_from_db(db_path: str, market_id: int = 120) -> dict:
+    try:
+        con = connect(str(db_path))
+    except Exception as e:
+        return {"ok": False, "error": str(e), "by_tf": {}, "stats": []}
     try:
         stats = [
             dict(r)
@@ -102,7 +103,7 @@ def _indicators_from_db(db_path: Path, market_id: int = 120) -> dict:
         con.close()
 
 
-async def build(market_id: int = 120, db_path: Path | None = None) -> dict:
+async def build(market_id: int = 120, db_path: str | None = None) -> dict:
     import server
 
     db_path = db_path or DEFAULT_DB
@@ -161,7 +162,7 @@ async def build(market_id: int = 120, db_path: Path | None = None) -> dict:
         }
         line = f"LIT flat / sess {sess_pnl:+.2f} | {ind or 'ROC(10)'} {tf or ''}".strip()
 
-    indicators = _indicators_from_db(Path(db_path), market_id)
+    indicators = _indicators_from_db(str(db_path), market_id)
 
     return {
         "ok": True,
@@ -192,7 +193,7 @@ def main() -> int:
     ap.add_argument("--market-id", type=int, default=120)
     ap.add_argument("--db", default=str(DEFAULT_DB))
     ns = ap.parse_args()
-    data = asyncio.run(build(ns.market_id, Path(ns.db)))
+    data = asyncio.run(build(ns.market_id, str(ns.db)))
     print(json.dumps(data, ensure_ascii=True))
     return 0 if data.get("ok") else 1
 

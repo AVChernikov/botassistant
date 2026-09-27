@@ -8,6 +8,15 @@
       "env": {
         "PYTHONUTF8": "1"
       }
+    },
+    "botassistant-mysql": {
+      "command": "C:\\Users\\teams\\Desktop\\cursor\\botassistant\\mcp-lighter\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\teams\\Desktop\\cursor\\botassistant\\mcp-lighter\\mysql_mcp_server.py"
+      ],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
     }
   }
 }

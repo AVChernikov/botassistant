@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Lighter;
 
 /**
- * Persists full candle×indicator snapshots to SQLite via Python helper.
+ * Persists full candle×indicator snapshots to MySQL via Python helper.
  * Each tick replaces previous rows for the given market+resolution scopes.
  */
 final class IndicatorHistoryStore
@@ -18,9 +18,14 @@ final class IndicatorHistoryStore
      */
     public static function saveRows(string $dbPath, array $rows, array $replaceScopes = [], array $stats = []): array
     {
-        $dir = dirname($dbPath);
-        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
-            return ['ok' => false, 'inserted' => 0, 'db_path' => $dbPath, 'error' => 'Cannot create data dir'];
+        $isMysql = str_starts_with(strtolower($dbPath), 'mysql://')
+            || str_starts_with(strtolower($dbPath), 'mysql:')
+            || strtolower($dbPath) === 'mysql';
+        if (!$isMysql) {
+            $dir = dirname($dbPath);
+            if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+                return ['ok' => false, 'inserted' => 0, 'db_path' => $dbPath, 'error' => 'Cannot create data dir'];
+            }
         }
 
         $payload = json_encode([

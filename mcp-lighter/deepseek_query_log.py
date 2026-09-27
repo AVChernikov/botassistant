@@ -1,49 +1,16 @@
 #!/usr/bin/env python3
-"""Log DeepSeek query history (analyze / clarify / custom)."""
+"""Log DeepSeek query history (analyze / clarify / custom) — MySQL."""
 from __future__ import annotations
 
 import json
-import sqlite3
 import sys
 import time
 from pathlib import Path
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS deepseek_queries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    purpose TEXT NOT NULL DEFAULT 'custom',
-    model TEXT,
-    market_id INTEGER,
-    report_id INTEGER,
-    parent_query_id INTEGER,
-    prompt_text TEXT,
-    messages_json TEXT,
-    response_text TEXT,
-    reasoning_text TEXT,
-    usage_json TEXT,
-    prompt_tokens INTEGER,
-    completion_tokens INTEGER,
-    total_tokens INTEGER,
-    duration_ms INTEGER,
-    status TEXT NOT NULL DEFAULT 'ok',
-    error_text TEXT,
-    meta_json TEXT,
-    created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_ds_queries_created ON deepseek_queries(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ds_queries_purpose ON deepseek_queries(purpose, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ds_queries_report ON deepseek_queries(report_id);
-"""
+from db import Connection, connect
 
 
-def connect(db_path: str) -> sqlite3.Connection:
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(db_path)
-    con.executescript(SCHEMA)
-    return con
-
-
-def save(con: sqlite3.Connection, row: dict) -> int:
+def save(con: Connection, row: dict) -> int:
     usage = row.get("usage") or {}
     if isinstance(usage, str):
         try:
@@ -122,8 +89,8 @@ def main() -> int:
             purpose = data.get("purpose")
             sql = """
                 SELECT id, purpose, model, market_id, report_id, parent_query_id,
-                       substr(prompt_text, 1, 200) AS prompt_preview,
-                       substr(response_text, 1, 200) AS response_preview,
+                       SUBSTR(prompt_text, 1, 200) AS prompt_preview,
+                       SUBSTR(response_text, 1, 200) AS response_preview,
                        prompt_tokens, completion_tokens, total_tokens,
                        duration_ms, status, created_at
                 FROM deepseek_queries
@@ -136,8 +103,7 @@ def main() -> int:
             sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
             args.append(max(1, min(200, limit)))
             cur = con.execute(sql, args)
-            cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            rows = [dict(r) for r in cur.fetchall()]
             print(json.dumps({"ok": True, "rows": rows}, ensure_ascii=True))
             return 0
         if op == "get":
@@ -147,8 +113,7 @@ def main() -> int:
             if not row:
                 print(json.dumps({"ok": False, "error": "not found"}))
                 return 0
-            cols = [d[0] for d in cur.description]
-            print(json.dumps({"ok": True, "row": dict(zip(cols, row))}, ensure_ascii=True))
+            print(json.dumps({"ok": True, "row": dict(row)}, ensure_ascii=True))
             return 0
         print(json.dumps({"ok": False, "error": "unknown op"}))
         return 1

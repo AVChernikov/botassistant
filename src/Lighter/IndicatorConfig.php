@@ -144,12 +144,23 @@ final class IndicatorConfig
 
     public function dbPath(): string
     {
-        $rel = $this->get('DB_PATH', 'data/indicator_history.sqlite') ?? 'data/indicator_history.sqlite';
-        if (preg_match('#^[a-zA-Z]:[\\\\/]|^[/\\\\]#', $rel)) {
-            return $rel;
+        $dsn = $this->get('DB_DSN', '') ?? '';
+        if ($dsn !== '') {
+            return $dsn;
+        }
+        $host = $this->get('DB_HOST', '') ?? '';
+        $name = $this->get('DB_NAME', '') ?? '';
+        if ($host !== '' || $name !== '') {
+            $user = rawurlencode($this->get('DB_USER', 'bot') ?? 'bot');
+            $pass = rawurlencode($this->get('DB_PASS', $this->get('DB_PASSWORD', 'botassistant') ?? 'botassistant') ?? 'botassistant');
+            $h = $host !== '' ? $host : '127.0.0.1';
+            $port = $this->get('DB_PORT', '3306') ?? '3306';
+            $db = $name !== '' ? $name : 'botassistant';
+
+            return "mysql://{$user}:{$pass}@{$h}:{$port}/{$db}";
         }
 
-        return $this->root . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $rel);
+        return 'mysql://bot:botassistant@127.0.0.1:3306/botassistant';
     }
 
     public function endpointUrl(): string

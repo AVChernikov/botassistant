@@ -1,0 +1,66 @@
+---
+description: Save critical agent state to MySQL and rotate Cursor chat when context grows
+alwaysApply: true
+---
+
+# Context compaction · agent checkpoints
+
+## Problem
+
+Long 2m-trading chats burn cache tokens. Critical state must survive a **new chat**.
+
+## Critical data (MySQL `agent_checkpoints`)
+
+Packed by `mcp-lighter/agent_checkpoint.py`:
+
+- `_agent_trade_state.json`
+- `_lit_session_state.json`
+- `_tg_control.json`
+- slim `_agent_tick_brief` (position, ROC, session, decision_hint, report stub)
+- handoff markdown → `_agent_handoff.md`
+- rotate timer → `_agent_rotate_state.json`
+
+Autosave: every ~10m from `agent_tick_brief.py` (`reason=auto`). Keep last ~80 rows.
+
+## Telegram (instant, no agent queue)
+
+Commands (live in `telegram_bot.py`):
+
+- `rotate` / `новый чат` / `checkpoint` / `обрезать` → save + TG bootstrap text
+
+Auto heavy nudge: schtask brief runs `maybe_heavy_notify` — if **>90m** since last load/rotate (cooldown 30m) → save + TG with paste commands. Does **not** open IDE chat.
+
+## When to rotate (cut context)
+
+Do a **save + ask user / TG** when any of:
+
+- Chat is long / tooling-heavy and idle ticks still cost a lot (cache reads huge)
+- User asks to «обрезать контекст» / «новый чат» / «checkpoint» / TG `rotate`
+- Before a risky flip if state must not be lost
+
+Commands (cwd `mcp-lighter`):
+
+```bash
+.\.venv\Scripts\python.exe agent_checkpoint.py rotate --source agent
+.\.venv\Scripts\python.exe agent_checkpoint.py heavy-check --force
+.\.venv\Scripts\python.exe agent_checkpoint.py handoff --latest
+```
+
+If chat feels heavy: run `heavy-check --force` (or `rotate`) — user gets TG; tell them to open a **new** Cursor chat.
+
+## New chat bootstrap
+
+```bash
+cd mcp-lighter
+.\.venv\Scripts\python.exe agent_checkpoint.py load --latest --print-handoff
+```
+
+Restores JSON files + prints handoff + resets heavy timer. Then continue `/loop 2m` and read `_agent_tick_brief.json` as usual.
+
+Also: `list --limit 20`, `load --id N`.
+
+## Do not
+
+- Do not try to delete Cursor transcript from tools — rotation = new chat + DB load
+- Do not put secrets (`.env` keys) into checkpoints
+- Do not claim TG can open a Cursor IDE chat — only save + instructions

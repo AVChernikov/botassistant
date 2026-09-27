@@ -1,35 +1,13 @@
 #!/usr/bin/env python3
-"""Save / list / get AI indicator pattern reports."""
+"""Save / list / get AI indicator pattern reports (MySQL)."""
 from __future__ import annotations
 
 import json
-import sqlite3
 import sys
 import time
 from pathlib import Path
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS indicator_reports (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    market_id INTEGER,
-    symbol TEXT,
-    model TEXT,
-    title TEXT,
-    summary TEXT,
-    findings_json TEXT,
-    compact_bytes INTEGER,
-    raw_response TEXT,
-    created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_ind_reports_created ON indicator_reports(created_at DESC);
-"""
-
-
-def connect(db_path: str) -> sqlite3.Connection:
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(db_path)
-    con.executescript(SCHEMA)
-    return con
+from db import connect
 
 
 def main() -> int:
@@ -37,7 +15,7 @@ def main() -> int:
     if not path:
         print(json.dumps({"ok": False, "error": "payload path required"}))
         return 1
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     db_path = data["db_path"]
     op = data.get("op")
     con = connect(db_path)
@@ -84,8 +62,7 @@ def main() -> int:
             sql += " ORDER BY created_at DESC LIMIT ?"
             args.append(max(1, min(100, limit)))
             cur = con.execute(sql, args)
-            cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+            rows = [dict(row) for row in cur.fetchall()]
             print(json.dumps({"ok": True, "reports": rows}, ensure_ascii=True))
             return 0
 
@@ -103,8 +80,7 @@ def main() -> int:
             if not row:
                 print(json.dumps({"ok": False, "error": "not found"}))
                 return 0
-            cols = [d[0] for d in cur.description]
-            report = dict(zip(cols, row))
+            report = dict(row)
             if report.get("findings_json"):
                 try:
                     report["findings"] = json.loads(report["findings_json"])

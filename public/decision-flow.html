@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Схема решений · botassistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #eef2ef;
+      --bg-2: #e4ebe5;
+      --ink: #152019;
+      --muted: #5c6b61;
+      --line: #c7d2cb;
+      --panel: rgba(255, 255, 255, 0.85);
+      --accent: #0f6b4c;
+      --warn: #c45c26;
+      --bad: #b42318;
+      --ok: #0f6b4c;
+      --hold: #5c6b61;
+      --blue: #1f5f8b;
+      --shadow: 0 18px 50px rgba(21, 32, 25, 0.08);
+      --radius: 14px;
+      --mono: "IBM Plex Mono", ui-monospace, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: Manrope, sans-serif;
+      background:
+        radial-gradient(1100px 520px at 8% -10%, #d9ebe0 0%, transparent 55%),
+        radial-gradient(900px 480px at 100% 0%, #f3e2d4 0%, transparent 50%),
+        linear-gradient(180deg, var(--bg), var(--bg-2));
+    }
+    .wrap { width: min(920px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 3.5rem; }
+    .brand { font-size: clamp(1.6rem, 3.5vw, 2.2rem); font-weight: 700; letter-spacing: -0.04em; }
+    .brand span { color: var(--accent); }
+    .subtitle { margin: .45rem 0 0; color: var(--muted); font-size: .95rem; max-width: 40rem; }
+    .nav { margin-top: .55rem; display: flex; flex-wrap: wrap; gap: .65rem; font-size: .92rem; }
+    .nav a { color: var(--accent); font-weight: 600; text-decoration: none; }
+
+    .tick {
+      margin: 1.25rem 0 1.5rem;
+      padding: .85rem 1rem;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      font-size: .88rem;
+      color: var(--muted);
+    }
+    .tick strong { color: var(--ink); }
+
+    .dbbadge {
+      display: inline-block;
+      margin-top: .55rem;
+      font-family: var(--mono);
+      font-size: .72rem;
+      padding: .2rem .5rem;
+      border-radius: 999px;
+      background: rgba(31, 95, 139, 0.1);
+      color: var(--blue);
+    }
+
+    .flow { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+    .step {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1rem 1.1rem;
+      box-shadow: var(--shadow);
+    }
+    .step .n {
+      font-family: var(--mono);
+      font-size: .72rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: .35rem;
+    }
+    .step h2 {
+      margin: 0 0 .4rem;
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .step p, .step li { margin: 0; color: var(--muted); font-size: .9rem; line-height: 1.45; }
+    .step ul { margin: .4rem 0 0; padding-left: 1.1rem; }
+    .step code {
+      font-family: var(--mono);
+      font-size: .78rem;
+      background: rgba(15, 107, 76, 0.08);
+      padding: .08rem .32rem;
+      border-radius: 4px;
+      color: var(--ink);
+    }
+
+    .io {
+      margin-top: .65rem;
+      display: grid;
+      gap: .45rem;
+    }
+    .io-row {
+      display: grid;
+      grid-template-columns: 4.2rem 1fr;
+      gap: .5rem;
+      align-items: start;
+      font-size: .82rem;
+      line-height: 1.4;
+    }
+    .io-row .k {
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--blue);
+      padding-top: .15rem;
+    }
+    .io-row .v { color: var(--muted); }
+    .io-row .v code { font-size: .74rem; }
+
+    .connector {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: .35rem 0;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .75rem;
+    }
+    .connector::before {
+      content: "";
+      width: 2px;
+      height: 14px;
+      background: var(--line);
+      margin-bottom: .2rem;
+    }
+
+    .branch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: .75rem;
+      margin: .15rem 0;
+    }
+    @media (max-width: 600px) { .branch { grid-template-columns: 1fr; } }
+
+    .leaf {
+      border-radius: var(--radius);
+      padding: .9rem 1rem;
+      border: 1px solid var(--line);
+      background: #f7faf7;
+    }
+    .leaf.long { border-color: rgba(15, 107, 76, 0.45); background: rgba(15, 107, 76, 0.08); }
+    .leaf.short { border-color: rgba(180, 35, 24, 0.4); background: rgba(180, 35, 24, 0.06); }
+    .leaf.hold { border-color: var(--line); }
+    .leaf.kill { border-color: rgba(196, 92, 38, 0.5); background: rgba(196, 92, 38, 0.08); }
+    .leaf h3 { margin: 0 0 .3rem; font-size: .95rem; }
+    .leaf p { margin: 0; font-size: .84rem; color: var(--muted); line-height: 1.4; }
+
+    .q {
+      text-align: center;
+      font-weight: 600;
+      font-size: .92rem;
+      padding: .65rem;
+      color: var(--ink);
+    }
+
+    .matrix {
+      margin-top: 1.75rem;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .matrix h2 {
+      margin: 0;
+      padding: 1rem 1.1rem .35rem;
+      font-size: 1.05rem;
+    }
+    .matrix .lead {
+      margin: 0;
+      padding: 0 1.1rem 1rem;
+      color: var(--muted);
+      font-size: .88rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .82rem;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: .65rem .9rem;
+      border-top: 1px solid var(--line);
+    }
+    th {
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: rgba(21, 32, 25, 0.03);
+      font-weight: 500;
+    }
+    td code {
+      font-family: var(--mono);
+      font-size: .74rem;
+      background: rgba(15, 107, 76, 0.08);
+      padding: .05rem .28rem;
+      border-radius: 4px;
+    }
+    td .rw { color: var(--warn); font-weight: 600; }
+    td .ro { color: var(--blue); font-weight: 600; }
+    .note {
+      margin-top: 1rem;
+      padding: .85rem 1rem;
+      border-radius: var(--radius);
+      border: 1px dashed var(--line);
+      color: var(--muted);
+      font-size: .84rem;
+      line-height: 1.45;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">принятие решений <span>· агент</span></div>
+      <p class="subtitle">Каждые 2 минуты: от endpoints и MySQL до long / short / hold. База: <code>botassistant</code> @ MariaDB :3306.</p>
+      <div class="dbbadge">DB_DSN → mysql://bot:***@127.0.0.1:3306/botassistant</div>
+      <div class="nav">
+        <a href="index.php">← стартовая</a>
+        <a href="architecture.html">архитектура</a>
+        <a href="lit.php">LIT #120</a>
+        <a href="phpmyadmin/">phpMyAdmin</a>
+      </div>
+    </header>
+
+    <div class="tick">
+      Тик 2м: <strong>TG</strong> → <strong>MCP positions</strong> → <strong>tick/CLI или api</strong> →
+      <strong>MySQL</strong> → <strong>report/clarify</strong> → <strong>решение</strong> → MCP trade / silent hold
+    </div>
+
+    <div class="flow">
+      <div class="step">
+        <div class="n">шаг 0 · telegram</div>
+        <h2>Очередь бота</h2>
+        <p>Читаю <code>tg_queue.py --pending</code> / <code>_tg_agent_inbox.json</code>. Есть команды — выполняю, отвечаю через <code>telegram_notify.py</code>, <code>--ack</code>.</p>
+        <div class="io">
+          <div class="io-row"><div class="k">endpoint</div><div class="v">нет HTTP — локальные скрипты Python</div></div>
+          <div class="io-row"><div class="k">mysql</div><div class="v">не пишет</div></div>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <div class="step">
+        <div class="n">шаг 1 · позиция</div>
+        <h2>Текущий LIT на Lighter</h2>
+        <ul>
+          <li>MCP <code>get_positions</code> / <code>get_account</code></li>
+          <li>опционально HTTP <code>api.php?action=trading_status</code> → <code>trading_status.py</code></li>
+          <li>session PnL: <code>_lit_session_state.json</code> · решение: <code>_agent_trade_state.json</code></li>
+          <li>лот: база <code>$200</code>, после просадки до <code>$400</code></li>
+        </ul>
+        <div class="io">
+          <div class="io-row"><div class="k">endpoint</div><div class="v"><code>trading_status</code> (читает БД + MCP)</div></div>
+          <div class="io-row"><div class="k">mysql</div><div class="v"><span class="ro">READ</span> <code>indicator_snapshots</code>, <code>indicator_stats</code></div></div>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <div class="step">
+        <div class="n">шаг 2 · снимок</div>
+        <h2>Обновление индикаторов</h2>
+        <ul>
+          <li>быстрый путь: <code>php scripts/indicators_tick_cli.php</code></li>
+          <li>или HTTP: <code>api.php?action=indicators_tick&amp;secret=…</code></li>
+          <li>свечи Lighter → ROC/MOM/MACD/… по ТФ 15m…1d</li>
+          <li>replace scope: удаляет старые строки market+resolution, вставляет заново</li>
+        </ul>
+        <div class="io">
+          <div class="io-row"><div class="k">endpoint</div><div class="v"><code>indicators_tick</code> · config: <code>indicators_config</code></div></div>
+          <div class="io-row"><div class="k">mysql</div><div class="v"><span class="rw">WRITE</span> <code>indicator_snapshots</code> + <code>indicator_stats</code><br>(через <code>indicator_history_write.py</code>)</div></div>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <div class="step">
+        <div class="n">шаг 3 · отчёт рынка</div>
+        <h2>DeepSeek report / clarify</h2>
+        <ul>
+          <li>schtask ~5м: <code>indicators_pipeline_cli.php</code> или <code>action=indicators_pipeline</code></li>
+          <li>на 2м-тике обычно только чтение последнего отчёта</li>
+          <li>сравнить <code>indicator_reports.id</code> с <code>_agent_trade_state.last_report_id</code></li>
+          <li>неясно → POST clarify, <strong>≤3</strong> за тик</li>
+        </ul>
+        <div class="io">
+          <div class="io-row"><div class="k">endpoint</div><div class="v">
+            <code>indicators_compact</code> (сборка для LLM)<br>
+            <code>indicators_analyze</code> / <code>indicators_pipeline</code> (secret)<br>
+            <code>indicators_report</code> GET list/get · POST save/clarify<br>
+            <code>deepseek_queries</code> история вызовов
+          </div></div>
+          <div class="io-row"><div class="k">mysql</div><div class="v">
+            <span class="ro">READ</span> snapshots/stats → compact<br>
+            <span class="rw">WRITE</span> <code>indicator_reports</code><br>
+            <span class="rw">WRITE</span> <code>deepseek_queries</code> (analyze / clarify / link report_id)
+          </div></div>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <div class="step">
+        <div class="n">шаг 4 · фильтры риска</div>
+        <h2>Можно ли открывать?</h2>
+        <ul>
+          <li>kill-switch: session ≤ <strong>−$50</strong> или ≥ <strong>+$100</strong> → стоп новых входов</li>
+          <li>SL = kill-room: <code>|session_kill − session_pnl| / lot</code> (не фикс 30%)</li>
+          <li>TP = <strong>50%</strong> от entry</li>
+          <li>user <code>стоп</code> / paused в <code>_tg_control.json</code> — только hold/close по просьбе</li>
+        </ul>
+        <div class="io">
+          <div class="io-row"><div class="k">endpoint</div><div class="v">нет — JSON state на диске</div></div>
+          <div class="io-row"><div class="k">mysql</div><div class="v">не пишет</div></div>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <div class="q">согласованность сигналов? (default: ROC 1h + bias 12h)</div>
+
+      <div class="branch">
+        <div class="leaf hold">
+          <h3>нет / конфликт ТФ</h3>
+          <p>Напр. 12h ROC long, а 1h ROC↓ без подтверждения → <strong>HOLD</strong>.</p>
+        </div>
+        <div class="leaf long">
+          <h3>да, перевес long</h3>
+          <p>ROC/MOM (+ MACD confluence) long, не против сильного 12h short → <strong>LONG</strong>.</p>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <div class="branch">
+        <div class="leaf short">
+          <h3>да, перевес short</h3>
+          <p>Зеркально согласованный short → <strong>SHORT</strong>. Opposite open → flip (discretionary, TG#76).</p>
+        </div>
+        <div class="leaf kill">
+          <h3>риск / kill</h3>
+          <p>Шаг 4 не пройден → только <strong>HOLD</strong> (или close по юзеру).</p>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <div class="step">
+        <div class="n">шаг 5 · действие</div>
+        <h2>Исполнение на Lighter</h2>
+        <ul>
+          <li><strong>flat → signal</strong>: MCP <code>open_long</code> / <code>open_short</code> quote $200…$400</li>
+          <li><strong>opposite</strong>: <code>close_position</code> → open (flip)</li>
+          <li><strong>same side</strong>: не докупаю</li>
+          <li><code>place_tp_sl</code>: TP 50% / SL = kill-room</li>
+          <li>персист <code>_agent_trade_state.json</code> + TG только при open/flip/close</li>
+        </ul>
+        <div class="io">
+          <div class="io-row"><div class="k">endpoint</div><div class="v">MCP lighter-perps (не api.php)</div></div>
+          <div class="io-row"><div class="k">mysql</div><div class="v">не пишет (биржа + JSON state)</div></div>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <div class="step">
+        <div class="n">шаг 6 · idle</div>
+        <h2>Если ничего не менялось</h2>
+        <p>Нет TG и нет сделки → в Cursor молчу. Следующий тик через 2 минуты.</p>
+      </div>
+    </div>
+
+    <div class="matrix">
+      <h2>Карта endpoints → MySQL</h2>
+      <p class="lead">База <code>botassistant</code>. Все indicator_* ходят через Python helpers + DSN из <code>IndicatorConfig::dbPath()</code>.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>action (api.php)</th>
+            <th>роль</th>
+            <th>таблицы MySQL</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>markets</code> · <code>market</code> · <code>live</code> · <code>btc_analyze</code></td>
+            <td>рынок / свечи / стакан с Lighter</td>
+            <td>— (только внешний API)</td>
+          </tr>
+          <tr>
+            <td><code>indicators_config</code></td>
+            <td>показать конфиг + DSN</td>
+            <td>— (читает <code>indicators.env</code>)</td>
+          </tr>
+          <tr>
+            <td><code>indicators_tick</code></td>
+            <td>полный replace-снапшот</td>
+            <td><span class="rw">W</span> <code>indicator_snapshots</code>, <code>indicator_stats</code></td>
+          </tr>
+          <tr>
+            <td><code>indicators_history</code></td>
+            <td>последние строки снапшота</td>
+            <td><span class="ro">R</span> snapshots (+ stats в writer)</td>
+          </tr>
+          <tr>
+            <td><code>indicators_compact</code></td>
+            <td>сжатый JSON для LLM</td>
+            <td><span class="ro">R</span> <code>indicator_snapshots</code>, <code>indicator_stats</code></td>
+          </tr>
+          <tr>
+            <td><code>indicators_analyze</code></td>
+            <td>DeepSeek анализ → отчёт</td>
+            <td><span class="ro">R</span> snap/stats · <span class="rw">W</span> <code>indicator_reports</code>, <code>deepseek_queries</code></td>
+          </tr>
+          <tr>
+            <td><code>indicators_pipeline</code></td>
+            <td>tick + analyze (cron)</td>
+            <td><span class="rw">W</span> все четыре таблицы</td>
+          </tr>
+          <tr>
+            <td><code>indicators_report</code></td>
+            <td>GET list/get · POST save/clarify</td>
+            <td><span class="ro">R</span>/<span class="rw">W</span> <code>indicator_reports</code>; clarify ещё <span class="rw">W</span> <code>deepseek_queries</code></td>
+          </tr>
+          <tr>
+            <td><code>deepseek_queries</code></td>
+            <td>история вызовов ИИ</td>
+            <td><span class="ro">R</span> <code>deepseek_queries</code></td>
+          </tr>
+          <tr>
+            <td><code>trading_status</code></td>
+            <td>позиция + индикаторы + PnL</td>
+            <td><span class="ro">R</span> <code>indicator_snapshots</code>, <code>indicator_stats</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="matrix" style="margin-top:1rem">
+      <h2>Таблицы MySQL</h2>
+      <p class="lead">Схема создаётся автоматически в <code>mcp-lighter/db.py</code> (InnoDB utf8mb4).</p>
+      <table>
+        <thead>
+          <tr>
+            <th>таблица</th>
+            <th>что хранит</th>
+            <th>кто заполняет</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>indicator_snapshots</code></td>
+            <td>каждая свеча × индикатор: value, signal, close, bar_ts</td>
+            <td><code>indicators_tick</code> / tick CLI / pipeline</td>
+          </tr>
+          <tr>
+            <td><code>indicator_stats</code></td>
+            <td>агрегаты метода: return%, PF, accuracy, last_signal</td>
+            <td>тот же tick (вместе со snapshots)</td>
+          </tr>
+          <tr>
+            <td><code>indicator_reports</code></td>
+            <td>AI-отчёт: title, summary, findings_json, raw</td>
+            <td><code>indicators_analyze</code> · pipeline · POST report</td>
+          </tr>
+          <tr>
+            <td><code>deepseek_queries</code></td>
+            <td>каждый вызов DeepSeek: prompt/response/tokens/purpose</td>
+            <td>analyze · clarify · DeepSeekClient</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="matrix" style="margin-top:1rem">
+      <h2>Windows Task Scheduler (cron)</h2>
+      <p class="lead">
+        Все задачи: <code>powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File …</code>,
+        cwd = корень репо. Триггер: Daily 00:00 + Repetition. Регистрация: <code>scripts/install_*.ps1</code>.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>TaskName</th>
+            <th>интервал</th>
+            <th>cron .ps1</th>
+            <th>что запускает</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>botassistant-tg-queue-2m</code></td>
+            <td>каждые <strong>2м</strong> (PT2M)<br>limit 2м</td>
+            <td><code>scripts/cron_tg_queue.ps1</code><br><span style="color:var(--muted)">install_tg_queue_task.ps1</span></td>
+            <td><code>tg_queue_cron_once.py</code> → inbox<br>
+              затем <code>agent_tick_brief.py</code> → <code>_agent_tick_brief.json</code><br>
+              (+ autosave MySQL <code>agent_checkpoints</code> ≤1/10м)<br>
+              (агент Cursor читает бриф; торгует только если action≠hold)</td>
+          </tr>
+          <tr>
+            <td><code>botassistant-ind-pipeline</code></td>
+            <td>каждые <strong>5м</strong> (PT5M)<br>из <code>CRON_INTERVAL_SEC</code><br>limit 10м</td>
+            <td><code>scripts/cron_indicators.ps1</code><br><span style="color:var(--muted)">install_indicators_pipeline_task.ps1</span></td>
+            <td><code>php scripts/indicators_pipeline_cli.php</code><br>→ snapshot + DeepSeek + report<br><span class="rw">W</span> все 4 таблицы MySQL</td>
+          </tr>
+          <tr>
+            <td><code>botassistant-pos-status-30m</code></td>
+            <td>каждые <strong>30м</strong> (PT30M)<br>limit 5м</td>
+            <td><code>scripts/cron_position_status.ps1</code><br><span style="color:var(--muted)">install_position_status_task.ps1</span></td>
+            <td><code>telegram_notify.py --position-report</code><br>строка LIT $VOL side pnl / sess</td>
+          </tr>
+          <tr>
+            <td><code>botassistant-ind-accuracy-3h</code></td>
+            <td>каждые <strong>3ч</strong> (PT3H)<br>limit 15м</td>
+            <td><code>scripts/cron_ind_accuracy.ps1</code><br><span style="color:var(--muted)">install_ind_accuracy_task.ps1</span></td>
+            <td><code>_ind_accuracy_24h.py</code> → Telegram<br>рейтинг методов 24h/12h</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="note">
+      CLI-эквиваленты без HTTP: <code>scripts/indicators_tick_cli.php</code>,
+      <code>scripts/indicators_pipeline_cli.php</code>,
+      <code>mcp-lighter/indicator_report.py</code>,
+      <code>mcp-lighter/_roc_check.py</code> — те же таблицы.
+      Критическое состояние агента: <code>mcp-lighter/agent_checkpoint.py</code>
+      (<code>save</code>/<code>load --latest</code>/<code>handoff</code>) → таблица
+      <code>agent_checkpoints</code>; при росте контекста — новый чат + restore.
+      Старый SQLite <code>data/indicator_history.sqlite</code> больше не используется агентом (оставлен как архив после миграции).
+      Агентский loop <code>/loop 2m</code> в Cursor — отдельно от schtask TG; schtask только освежает inbox.
+    </p>
+  </div>
+</body>
+</html>

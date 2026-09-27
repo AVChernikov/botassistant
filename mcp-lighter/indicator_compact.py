@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 import sys
 import time
-from pathlib import Path
+
+from db import connect
 
 # Short indicator codes for token savings
 CODE = {
@@ -39,11 +39,10 @@ def rnum(v, nd=4):
 
 
 def build(db_path: str, market_id: int | None, events_per_tf: int) -> dict:
-    if not Path(db_path).is_file():
-        return {"ok": False, "error": "db missing", "db_path": db_path}
-
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
+    try:
+        con = connect(db_path)
+    except Exception as e:
+        return {"ok": False, "error": str(e), "db_path": db_path}
     try:
         q = "SELECT DISTINCT market_id, symbol FROM indicator_stats"
         args: list = []

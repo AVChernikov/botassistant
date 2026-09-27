@@ -21,12 +21,33 @@ final class DeepSeekClient
     public function __construct(?string $model = null, ?string $dbPath = null, array $logContext = [])
     {
         $env = self::loadEnv();
-        $this->model = $model ?? ($env['DEEPSEEK_MODEL'] ?? 'deepseek-v4-flash');
+        $this->model = $model ?? self::modelFor('analyze', $env);
         if (($env['DEEPSEEK_API_KEY'] ?? '') === '') {
             throw new \RuntimeException('DEEPSEEK_API_KEY missing in mcp-lighter/.env');
         }
         $this->dbPath = $dbPath;
         $this->logContext = $logContext;
+    }
+
+    /**
+     * analyze/flash → DEEPSEEK_MODEL_FLASH (pipeline).
+     * loop/pro/clarify → DEEPSEEK_MODEL_PRO (2m agent).
+     *
+     * @param array<string, string>|null $env
+     */
+    public static function modelFor(string $role = 'analyze', ?array $env = null): string
+    {
+        $env ??= self::loadEnv();
+        $role = strtolower($role);
+        if (in_array($role, ['loop', 'pro', 'clarify', 'tick'], true)) {
+            return $env['DEEPSEEK_MODEL_PRO']
+                ?? $env['DEEPSEEK_MODEL']
+                ?? 'deepseek-v4-pro';
+        }
+
+        return $env['DEEPSEEK_MODEL_FLASH']
+            ?? $env['DEEPSEEK_MODEL']
+            ?? 'deepseek-v4-flash';
     }
 
     /**
