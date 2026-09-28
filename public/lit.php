@@ -207,6 +207,8 @@ declare(strict_types=1);
         <p class="subtitle">Mainnet · графики 1d → 1m с MACD, затем инструмент, стакан и сделки.</p>
       </div>
       <div class="nav">
+        <a href="vol-accuracy-report.php?market_id=120">vol × точность</a>
+        <span style="color:var(--muted);margin:0 .35rem">·</span>
         <a href="btc.php">BTC #1</a>
         ·
         <a href="index.php">общая</a>

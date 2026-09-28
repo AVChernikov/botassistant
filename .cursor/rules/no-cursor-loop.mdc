@@ -1,0 +1,11 @@
+---
+description: Forbid Cursor /loop — trading is DeepSeek schtask only
+alwaysApply: true
+---
+
+# Forbidden: Cursor `/loop`
+
+- **Never** invoke, suggest, resume, or document Cursor `/loop`, `/loop 2m`, or any IDE recurring agent loop for this repo.
+- Trading ticks = Windows schtask `botassistant-tg-queue-2m` → `deepseek_trader_agent.py` only.
+- After checkpoint load: observer mode — wait for user commands. Do not start a loop.
+- If the user asks to «запустить loop» / `/loop`: refuse and point to schtask + DeepSeek Pro.

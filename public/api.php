@@ -524,10 +524,108 @@ try {
             }
             jsonOut($decoded, !empty($decoded['ok']) ? 200 : 500);
 
+        case 'vol_accuracy_report':
+            // Same pipeline as public/vol-accuracy-report.php → slim JSON for DeepSeek
+            @ini_set('max_execution_time', '180');
+            @set_time_limit(180);
+            $marketId = filter_var($_GET['market_id'] ?? 120, FILTER_VALIDATE_INT);
+            $marketId = $marketId === false ? 120 : $marketId;
+            $candleCount = filter_var($_GET['candles'] ?? 400, FILTER_VALIDATE_INT);
+            if ($candleCount === false || !in_array($candleCount, [200, 400, 600], true)) {
+                $candleCount = 400;
+            }
+            $volMetric = (string) ($_GET['vol'] ?? 'ATR(14) pct');
+            if (!in_array($volMetric, TechnicalAnalysis::VOLATILITY_METHODS, true)) {
+                $volMetric = 'ATR(14) pct';
+            }
+            $force = (string) ($_GET['force'] ?? '') === '1';
+            $cacheDir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'data';
+            if (!is_dir($cacheDir)) {
+                @mkdir($cacheDir, 0775, true);
+            }
+            $cacheKey = sprintf('vol_acc_%d_%d_%s.json', $marketId, $candleCount, md5($volMetric));
+            $cachePath = $cacheDir . DIRECTORY_SEPARATOR . $cacheKey;
+            $cacheTtl = 20 * 60;
+            if (!$force && is_file($cachePath) && (time() - (int) filemtime($cachePath)) < $cacheTtl) {
+                $cached = json_decode((string) file_get_contents($cachePath), true);
+                if (is_array($cached) && !empty($cached['ok'])) {
+                    $cached['cached'] = true;
+                    $cached['cache_age_sec'] = time() - (int) filemtime($cachePath);
+                    jsonOut($cached);
+                }
+            }
+            $resolutions = ['1d', '12h', '4h', '1h', '30m', '15m'];
+            $frames = [];
+            $loaded = [];
+            $requests = [];
+            foreach ($resolutions as $resolution) {
+                foreach ($client->candlesHistoryRequests($marketId, $resolution, $candleCount) as $pageKey => $req) {
+                    $requests[$resolution . '__' . $pageKey] = $req;
+                }
+            }
+            $responses = $client->getMany($requests);
+            foreach ($resolutions as $resolution) {
+                $pages = [];
+                foreach ($responses as $key => $payload) {
+                    if (str_starts_with((string) $key, $resolution . '__')) {
+                        $pages[] = $payload;
+                    }
+                }
+                $items = Client::mergeCandlePages($pages, $candleCount);
+                $frames[$resolution] = $items;
+                $loaded[$resolution] = count($items);
+            }
+            $full = TechnicalAnalysis::runVolAccuracyReport($frames, 1, $volMetric);
+            // Slim payload for the trader (keep tokens modest)
+            $top = [];
+            foreach (array_slice($full['results'] ?? [], 0, 15) as $row) {
+                $top[] = [
+                    'method' => $row['method'],
+                    'resolution' => $row['resolution'],
+                    'accuracy' => $row['accuracy'],
+                    'signals' => $row['signals'],
+                    'corr_vol_accuracy' => $row['corr_vol_accuracy'],
+                    'accuracy_vol_low' => $row['accuracy_vol_low'],
+                    'accuracy_vol_high' => $row['accuracy_vol_high'],
+                    'profit_factor' => $row['profit_factor'],
+                    'score' => $row['score'],
+                ];
+            }
+            $byMethodSlim = [];
+            foreach (($full['by_method'] ?? []) as $method => $rows) {
+                $byMethodSlim[$method] = [];
+                foreach ($rows as $row) {
+                    $byMethodSlim[$method][] = [
+                        'resolution' => $row['resolution'],
+                        'accuracy' => $row['accuracy'],
+                        'signals' => $row['signals'],
+                        'corr_vol_accuracy' => $row['corr_vol_accuracy'],
+                        'accuracy_vol_low' => $row['accuracy_vol_low'],
+                        'accuracy_vol_high' => $row['accuracy_vol_high'],
+                        'score' => $row['score'],
+                    ];
+                }
+            }
+            $out = [
+                'ok' => true,
+                'dashboard' => 'vol-accuracy-report.php',
+                'market_id' => $marketId,
+                'candles' => $candleCount,
+                'vol_metric' => $volMetric,
+                'loaded' => $loaded,
+                'volatility' => $full['volatility'] ?? [],
+                'top_by_abs_corr' => $top,
+                'by_method' => $byMethodSlim,
+                'cached' => false,
+                'ts' => time(),
+            ];
+            @file_put_contents($cachePath, json_encode($out, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            jsonOut($out);
+
         default:
             jsonOut([
                 'ok' => false,
-                'error' => 'Unknown action. Use markets|market|btc_analyze|market_analyze|live|indicators_tick|indicators_history|indicators_config|indicators_compact|indicators_analyze|indicators_report|indicators_pipeline|deepseek_queries|trading_status',
+                'error' => 'Unknown action. Use markets|market|btc_analyze|market_analyze|live|indicators_tick|indicators_history|indicators_config|indicators_compact|indicators_analyze|indicators_report|indicators_pipeline|deepseek_queries|trading_status|vol_accuracy_report',
             ], 400);
     }
 } catch (ApiException $e) {

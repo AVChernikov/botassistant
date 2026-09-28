@@ -55,7 +55,7 @@ cd mcp-lighter
 .\.venv\Scripts\python.exe agent_checkpoint.py load --latest --print-handoff
 ```
 
-Restores JSON files + prints handoff + resets heavy timer. Then continue `/loop 2m` and read `_agent_tick_brief.json` as usual.
+Restores JSON files + prints handoff + resets heavy timer. Then stay in **observer** mode (no `/loop`). Schtask + DeepSeek Pro keep trading; read `_agent_tick_brief.json` only when the user asks.
 
 Also: `list --limit 20`, `load --id N`.
 
@@ -64,3 +64,4 @@ Also: `list --limit 20`, `load --id N`.
 - Do not try to delete Cursor transcript from tools — rotation = new chat + DB load
 - Do not put secrets (`.env` keys) into checkpoints
 - Do not claim TG can open a Cursor IDE chat — only save + instructions
+- Do not start `/loop` after load or rotate

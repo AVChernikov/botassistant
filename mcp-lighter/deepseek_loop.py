@@ -279,26 +279,38 @@ def run_tick(*, force: bool = True) -> dict[str, Any]:
 
 
 def record_entry_result(*, pnl: float) -> dict[str, Any]:
-    """Update consecutive_wrong_entries after a closed trade (call from agent)."""
+    """Update session_pnl + consecutive_wrong_entries after a closed trade."""
     session = _load_json(SESSION)
     trade = _load_json(TRADE)
     roc = session.setdefault("roc", {})
     if not isinstance(roc, dict):
         roc = {}
         session["roc"] = roc
+    prev = float(roc.get("session_pnl") if roc.get("session_pnl") is not None else trade.get("session_pnl") or 0)
+    sess = round(prev + float(pnl), 6)
     n = consecutive_wrong_entries(session, trade)
     if pnl < 0:
         n += 1
     else:
         n = 0
+    roc["session_pnl"] = sess
+    roc["last_trade_pnl"] = float(pnl)
     roc["consecutive_wrong_entries"] = n
     roc["lot"] = effective_lot(n, session)
     session["roc"] = roc
+    trade["session_pnl"] = sess
+    trade["last_trade_pnl"] = float(pnl)
     trade["consecutive_wrong_entries"] = n
     trade["lot"] = roc["lot"]
     SESSION.write_text(json.dumps(session, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     TRADE.write_text(json.dumps(trade, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return {"ok": True, "consecutive_wrong_entries": n, "lot": roc["lot"]}
+    return {
+        "ok": True,
+        "session_pnl": sess,
+        "last_trade_pnl": float(pnl),
+        "consecutive_wrong_entries": n,
+        "lot": roc["lot"],
+    }
 
 
 def main() -> int:

@@ -547,7 +547,8 @@
       (<code>save</code>/<code>load --latest</code>/<code>handoff</code>) → таблица
       <code>agent_checkpoints</code>; при росте контекста — новый чат + restore.
       Старый SQLite <code>data/indicator_history.sqlite</code> больше не используется агентом (оставлен как архив после миграции).
-      Агентский loop <code>/loop 2m</code> в Cursor — отдельно от schtask TG; schtask только освежает inbox.
+      Торговля: schtask <code>botassistant-tg-queue-2m</code> → DeepSeek Pro.
+      Cursor <code>/loop</code> в этом проекте <strong>запрещён</strong> (observer only).
     </p>
   </div>
 </body>

@@ -12,7 +12,8 @@ alwaysApply: true
   2. `agent_tick_brief.py` (snapshot brief)
   3. **`deepseek_trader_agent.py`** — DeepSeek **Pro**, fresh context, tools → Lighter + Telegram
 - System prompt = **latest active row** in MySQL `agent_prompts` (`agent_prompt.py`).
-- **No Cursor `/loop 2m`.** Do not poll TG or place trades unless the user asks in this chat.
+- **FORBIDDEN:** Cursor `/loop` / `/loop 2m` (any IDE recurring loop). Refuse if asked; trading is schtask + DeepSeek only.
+- Do not poll TG or place trades unless the user asks in this chat.
 
 ## Cursor role (you)
 

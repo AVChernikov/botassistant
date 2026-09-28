@@ -66,6 +66,41 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_account_trades",
+            "description": (
+                "YOUR fill history on Lighter (not market tape). "
+                "Call when user asks about past trades / 24h deals / история сделок."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "market_id": {"type": "integer", "default": 120},
+                    "limit": {"type": "integer", "default": 50},
+                    "hours": {"type": "integer", "default": 24},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_account_pnl",
+            "description": (
+                "Lighter account trade_pnl time series (equity change). "
+                "Call for «изменение счёта за сутки» / 24h PnL."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hours": {"type": "integer", "default": 24},
+                    "resolution": {"type": "string", "default": "1h"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "open_long",
             "description": "Open LIT long; prefer quote_usd",
             "parameters": {
@@ -131,7 +166,11 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "telegram_reply",
-            "description": "Send a Telegram message to the user",
+            "description": (
+                "Send Telegram to the user. Allowed ONLY if pending_tg, "
+                "position_report.due, or you opened/closed/flipped this turn. "
+                "Idle hold: do not call."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"text": {"type": "string"}},
@@ -143,11 +182,40 @@ TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "record_trade_pnl",
-            "description": "After closing a trade, record realized pnl for wrong-entry lot policy",
+            "description": (
+                "After THIS close/flip only: add pnl (USD of this fill, not Lighter lifetime realized) "
+                "to session_pnl and wrong-entry lot counter"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"pnl": {"type": "number"}},
                 "required": ["pnl"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vol_accuracy_report",
+            "description": (
+                "Run vol×accuracy dashboard (volatility → method accuracy → corr(vol,hit) "
+                "per method×timeframe). Call FIRST before choosing method / entry / flip."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "market_id": {"type": "integer", "default": 120},
+                    "candles": {"type": "integer", "default": 400},
+                    "vol": {
+                        "type": "string",
+                        "description": "ATR(14) pct | RV(48) log | Bollinger(20,2) width",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Bypass ~20m host cache",
+                        "default": False,
+                    },
+                },
             },
         },
     },
@@ -273,17 +341,51 @@ def build_user_payload(pending: list[dict]) -> dict[str, Any]:
 
     now = datetime.now().astimezone()
     pos_rep = _position_report_gate()
-    ask = "Decide actions via tools. Hold if unclear."
+    sess_canonical = (brief.get("session") or {}).get("session_pnl")
+    ask = (
+        "Idle default: HOLD with ZERO tool calls (no telegram_reply, no mysql, no get_positions). "
+        "Before any enter/flip/method choice: FIRST call vol_accuracy_report and analyze it. "
+        "telegram_reply only if pending_tg, position_report.due, or you actually trade this turn. "
+        "Use tick_brief.session.session_pnl as the only session PnL; ignore Lighter lifetime realized_pnl."
+    )
     if pending:
         ask = (
             f"PRIORITY: pending_tg has {len(pending)} message(s) — "
             "IMMEDIATELY telegram_reply to the user (same turn), then trade tools if needed. "
         ) + ask
+        joined = " ".join(str(p.get("text") or "") for p in pending).lower()
+        if any(
+            k in joined
+            for k in (
+                "сдел",
+                "истори",
+                "lighter",
+                "за сутки",
+                "24",
+                "pnl",
+                "счет",
+                "счёт",
+                "изменен",
+                "fills",
+                "trade",
+            )
+        ):
+            ask += (
+                " REQUIRED: user asks about trades/account change — call get_account_trades "
+                "(and get_account_pnl if about balance change) BEFORE answering; do not claim zero trades without data."
+            )
     if pos_rep.get("due"):
         ask += (
             " REQUIRED: position_report.due=true — send one telegram_reply position report "
-            f"for slot {pos_rep.get('slot_id')} (do not skip)."
+            f"for slot {pos_rep.get('slot_id')} using canonical session_pnl (do not skip)."
         )
+    kill_alert = brief.get("kill_alert") or {}
+    if kill_alert.get("critical"):
+        ask += (
+            " ALERT: kill_alert.critical=true (kill_room < $15) — no new opens; "
+            "consider tighten/close; host may already have sent TG kill alert."
+        )
+    market = brief.get("market") or {}
     return {
         "fresh_context": True,
         "clock": {
@@ -292,9 +394,24 @@ def build_user_payload(pending: list[dict]) -> dict[str, Any]:
             "hour": now.hour,
         },
         "position_report": pos_rep,
+        "kill_alert": kill_alert,
         "tick_brief": {
             "line": brief.get("line"),
             "position": brief.get("position"),
+            "market": {
+                "last": market.get("last"),
+                "mark": market.get("mark"),
+                "index": market.get("index"),
+                "best_bid": market.get("best_bid"),
+                "best_ask": market.get("best_ask"),
+                "spread": market.get("spread"),
+                "spread_bps": market.get("spread_bps"),
+                "daily_volume_usd": market.get("daily_volume_usd"),
+                "open_interest": market.get("open_interest"),
+                "funding_rate": market.get("funding_rate"),
+                "funding_pct": market.get("funding_pct"),
+                "book": market.get("book"),
+            },
             "session": brief.get("session"),
             "roc": brief.get("roc"),
             "bias": brief.get("bias"),
@@ -308,6 +425,7 @@ def build_user_payload(pending: list[dict]) -> dict[str, Any]:
                 "source": "DeepSeek Flash → MySQL indicator_reports → tick_brief.report",
             },
             "control": brief.get("control"),
+            "decision_hint": brief.get("decision_hint"),
         },
         "lot_policy": {
             "base_lot": base,
@@ -316,13 +434,25 @@ def build_user_payload(pending: list[dict]) -> dict[str, Any]:
             "lot_usd_effective": lot,
             "wrong_entries_for_bump": 3,
         },
+        "session_accounting": {
+            "canonical_session_pnl": sess_canonical,
+            "kill_room_usd": (brief.get("session") or {}).get("kill_room_usd"),
+            "note": (
+                "canonical_session_pnl is the session total after reset. "
+                "Do not report Lighter realized_pnl as session result. "
+                "trade_state.session_pnl may be stale — ignore if it differs."
+            ),
+        },
         "trade_state": {
             "side": trade.get("side"),
             "entry": trade.get("entry"),
-            "session_pnl": trade.get("session_pnl"),
+            "session_pnl": sess_canonical,
             "session_kill": trade.get("session_kill"),
             "sl_usd": trade.get("sl_usd"),
             "last_trade_pnl": trade.get("last_trade_pnl"),
+            "stale_warning": (
+                "side/entry here are last intent and may lag tick_brief.position"
+            ),
         },
         "pending_tg": [
             {"id": p.get("id"), "text": p.get("text"), "ts": p.get("ts")} for p in pending[:10]
@@ -366,17 +496,128 @@ def chat_completion(
         return json.loads(resp.read().decode("utf-8"))
 
 
-async def exec_tool(name: str, args: dict[str, Any], *, dry_run: bool) -> str:
+TRADE_TOOL_NAMES = frozenset(
+    {"open_long", "open_short", "close_position", "place_tp_sl", "place_take_profit", "place_stop_loss"}
+)
+
+REPO_ROOT = ROOT.parent
+VOL_REPORT_CLI = REPO_ROOT / "scripts" / "vol_accuracy_report_cli.php"
+INDICATORS_ENV = REPO_ROOT / "config" / "indicators.env"
+
+
+def _run_vol_accuracy_report(args: dict[str, Any], *, dry_run: bool) -> str:
+    """Fetch vol×accuracy dashboard JSON (PHP CLI; same as the web dashboard)."""
+    import subprocess
+
+    mid = int(args.get("market_id") or 120)
+    candles = int(args.get("candles") or 400)
+    if candles not in (200, 400, 600):
+        candles = 400
+    vol = str(args.get("vol") or "ATR(14) pct")
+    force = bool(args.get("force"))
+    if dry_run:
+        return json.dumps(
+            {
+                "ok": True,
+                "dry_run": True,
+                "market_id": mid,
+                "candles": candles,
+                "vol": vol,
+                "note": "would run vol-accuracy-report dashboard",
+            }
+        )
+    cmd = [
+        "php",
+        str(VOL_REPORT_CLI),
+        f"--market-id={mid}",
+        f"--candles={candles}",
+        f"--vol={vol}",
+    ]
+    if force:
+        cmd.append("--force")
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError:
+        return json.dumps({"ok": False, "error": "php not found in PATH"})
+    except subprocess.TimeoutExpired:
+        return json.dumps({"ok": False, "error": "vol_accuracy_report timeout"})
+    text = (proc.stdout or "").strip()
+    if not text and proc.stderr:
+        text = proc.stderr.strip()
+    start = text.find("{")
+    if start < 0:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "no json from vol_accuracy_report_cli",
+                "raw": text[:400],
+                "code": proc.returncode,
+            }
+        )
+    try:
+        data = json.loads(text[start:])
+    except json.JSONDecodeError:
+        return json.dumps({"ok": False, "error": "bad json", "raw": text[:400]})
+    if not isinstance(data, dict):
+        return json.dumps({"ok": False, "error": "unexpected payload"})
+    # Keep tool result bounded for the model
+    slim = {
+        "ok": bool(data.get("ok")),
+        "dashboard": data.get("dashboard"),
+        "market_id": data.get("market_id"),
+        "vol_metric": data.get("vol_metric"),
+        "cached": data.get("cached"),
+        "cache_age_sec": data.get("cache_age_sec"),
+        "volatility": data.get("volatility"),
+        "top_by_abs_corr": data.get("top_by_abs_corr"),
+        "by_method": data.get("by_method"),
+        "error": data.get("error"),
+    }
+    return json.dumps(slim, ensure_ascii=False)
+
+
+async def exec_tool(
+    name: str,
+    args: dict[str, Any],
+    *,
+    dry_run: bool,
+    tg_gate: dict[str, Any] | None = None,
+) -> str:
     import server as srv
 
     if name == "telegram_reply":
         text = str(args.get("text") or "")[:4000]
         if not text:
             return json.dumps({"ok": False, "error": "empty text"})
+        gate = tg_gate or {}
+        allowed = bool(
+            gate.get("pending")
+            or gate.get("report_due")
+            or gate.get("traded_this_turn")
+        )
+        if not allowed:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "skipped": "idle_no_tg",
+                    "reason": "telegram_reply blocked: no pending_tg, position_report, or trade this turn",
+                }
+            )
         if dry_run:
             return json.dumps({"ok": True, "dry_run": True, "text": text[:200]})
         send_message(text, log_source="trader")
         return json.dumps({"ok": True, "sent": True})
+
+    if name == "vol_accuracy_report":
+        return _run_vol_accuracy_report(args, dry_run=dry_run)
 
     if name == "mysql_list_tables":
         from mysql_mcp_server import list_tables
@@ -413,6 +654,17 @@ async def exec_tool(name: str, args: dict[str, Any], *, dry_run: bool) -> str:
         return await srv.get_account(active_only=True)
     if name == "get_active_orders":
         return await srv.get_active_orders(market=None, market_id=mid)
+    if name == "get_account_trades":
+        return await srv.get_account_trades(
+            market_id=mid,
+            limit=int(args.get("limit") or 50),
+            hours=int(args.get("hours") or 24),
+        )
+    if name == "get_account_pnl":
+        return await srv.get_account_pnl(
+            hours=int(args.get("hours") or 24),
+            resolution=str(args.get("resolution") or "1h"),
+        )
     if name == "open_long":
         return await srv.open_long(
             market=None,
@@ -468,6 +720,11 @@ async def run_agent(*, dry_run: bool = False, max_rounds: int = 4) -> dict[str, 
     final_text = ""
     usage_acc: dict[str, int] = {}
     tg_sent = False
+    tg_gate = {
+        "pending": bool(pending),
+        "report_due": report_due,
+        "traded_this_turn": False,
+    }
 
     import server as srv
 
@@ -499,6 +756,12 @@ async def run_agent(*, dry_run: bool = False, max_rounds: int = 4) -> dict[str, 
                 break
 
             for tc in tool_calls:
+                fn_name = str(((tc.get("function") or {}).get("name") or ""))
+                if fn_name in TRADE_TOOL_NAMES:
+                    tg_gate["traded_this_turn"] = True
+                    break
+
+            for tc in tool_calls:
                 fn = (tc.get("function") or {})
                 name = str(fn.get("name") or "")
                 try:
@@ -508,9 +771,16 @@ async def run_agent(*, dry_run: bool = False, max_rounds: int = 4) -> dict[str, 
                 if not isinstance(args, dict):
                     args = {}
                 try:
-                    result = await exec_tool(name, args, dry_run=dry_run)
+                    result = await exec_tool(name, args, dry_run=dry_run, tg_gate=tg_gate)
                 except Exception as e:  # noqa: BLE001
                     result = json.dumps({"ok": False, "error": str(e)[:400]})
+                if name in TRADE_TOOL_NAMES:
+                    try:
+                        parsed_trade = json.loads(result)
+                        if parsed_trade.get("ok") is not False:
+                            tg_gate["traded_this_turn"] = True
+                    except json.JSONDecodeError:
+                        tg_gate["traded_this_turn"] = True
                 if name == "telegram_reply":
                     try:
                         parsed = json.loads(result)

@@ -16,6 +16,7 @@
 /mcp-lighter/_tg_control.json
 /mcp-lighter/_tg_agent_inbox.json
 /mcp-lighter/_tg_pos_report_slots.json
+/mcp-lighter/_tg_kill_alert.json
 /mcp-lighter/_agent_tick_brief.json
 /mcp-lighter/_agent_handoff.md
 /mcp-lighter/_agent_checkpoint_last.json
@@ -34,3 +35,5 @@
 *.pyc
 /data/
 /config/indicators.env
+
+/mcp-lighter/_telegram_bot.lock

@@ -277,6 +277,8 @@ declare(strict_types=1);
         <span style="color:var(--muted);margin:0 .35rem">·</span>
         <a href="lit.php" style="color:var(--accent);font-weight:600;text-decoration:none">LIT #120</a>
         <span style="color:var(--muted);margin:0 .35rem">·</span>
+        <a href="vol-accuracy-report.php?market_id=120" style="color:var(--accent);font-weight:600;text-decoration:none">vol × точность</a>
+        <span style="color:var(--muted);margin:0 .35rem">·</span>
         <a href="architecture.html" style="color:var(--accent);font-weight:600;text-decoration:none">архитектура</a>
         <span style="color:var(--muted);margin:0 .35rem">·</span>
         <a href="decision-flow.html" style="color:var(--accent);font-weight:600;text-decoration:none">схема решений →</a>

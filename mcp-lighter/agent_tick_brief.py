@@ -19,9 +19,13 @@ INBOX = ROOT / "_tg_agent_inbox.json"
 SESSION = ROOT / "_lit_session_state.json"
 CONTROL = ROOT / "_tg_control.json"
 TRADE = ROOT / "_agent_trade_state.json"
+KILL_ALERT_STATE = ROOT / "_tg_kill_alert.json"
 IND = "ROC(10) zero-cross"
 KILL_LO = -50.0
 KILL_HI = 100.0
+KILL_ALERT_USD = 15.0
+KILL_ALERT_COOLDOWN_SEC = 20 * 60
+BOOK_LEVELS = 3
 
 
 def _load(path: Path, default):
@@ -31,6 +35,24 @@ def _load(path: Path, default):
         return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return default
+
+
+def _bar_short(ts) -> str | None:
+    if ts is None:
+        return None
+    try:
+        return time.strftime("%m-%d %H:%M", time.gmtime(int(ts)))
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _f(v) -> float | None:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _roc(market_id: int = 120) -> dict:
@@ -58,7 +80,8 @@ def _roc(market_id: int = 120) -> dict:
                 (market_id, res, IND, last_ts or 0),
             ).fetchone()
             out[res] = {
-                "bar_ts": last_ts,
+                "bar": _bar_short(last_ts),
+                "bar_ts": int(last_ts) if last_ts is not None else None,
                 "value": float(row["value"]) if row and row["value"] is not None else None,
                 "signal": int(row["signal"]) if row and row["signal"] is not None else None,
                 "close": float(row["close"]) if row and row["close"] is not None else None,
@@ -68,6 +91,176 @@ def _roc(market_id: int = 120) -> dict:
     finally:
         con.close()
     return out
+
+
+async def _market_snapshot(market_id: int = 120) -> dict:
+    """Volume/OI/price/spread + top-of-book + funding (Lighter)."""
+    import lighter
+    import server as srv
+
+    out: dict = {"market_id": market_id, "ok": False}
+    started_here = False
+    try:
+        if srv.runtime.api_client is None:
+            await srv.runtime.start()
+            started_here = True
+        assert srv.runtime.order_api is not None
+        m = await srv.runtime.find_market(market_id=market_id)
+        last = _f(m.get("last_trade_price"))
+        mark = _f(m.get("mark_price"))
+        index = _f(m.get("index_price"))
+        vol_quote = _f(m.get("daily_quote_token_volume"))
+        vol_base = _f(m.get("daily_base_token_volume"))
+        oi = _f(m.get("open_interest"))
+
+        book = await srv.runtime.order_api.order_book_orders(
+            market_id=market_id, limit=BOOK_LEVELS
+        )
+        bids_raw = getattr(book, "bids", None) or []
+        asks_raw = getattr(book, "asks", None) or []
+
+        def _lvl(rows, n: int) -> list[dict]:
+            levels: list[dict] = []
+            for r in rows[:n]:
+                d = r.to_dict() if hasattr(r, "to_dict") else (
+                    r.model_dump() if hasattr(r, "model_dump") else dict(r)
+                )
+                levels.append(
+                    {
+                        "px": _f(d.get("price")),
+                        "sz": _f(d.get("remaining_base_amount") or d.get("initial_base_amount")),
+                    }
+                )
+            return levels
+
+        bids = _lvl(bids_raw, BOOK_LEVELS)
+        asks = _lvl(asks_raw, BOOK_LEVELS)
+        best_bid = bids[0]["px"] if bids else None
+        best_ask = asks[0]["px"] if asks else None
+        mid = None
+        spread = None
+        spread_bps = None
+        if best_bid is not None and best_ask is not None:
+            mid = (best_bid + best_ask) / 2.0
+            spread = best_ask - best_bid
+            if mid > 0:
+                spread_bps = round(spread / mid * 10000.0, 2)
+
+        funding_rate = None
+        funding_pct = None
+        try:
+            fa = lighter.FundingApi(srv.runtime.api_client)
+            fr = await fa.funding_rates()
+            plain = fr.to_dict() if hasattr(fr, "to_dict") else (
+                fr.model_dump() if hasattr(fr, "model_dump") else {}
+            )
+            rows = plain.get("funding_rates") or []
+            lit = [r for r in rows if int(r.get("market_id") or -1) == int(market_id)]
+            pick = next((r for r in lit if str(r.get("exchange") or "").lower() == "lighter"), None)
+            if pick is None and lit:
+                pick = lit[0]
+            if pick is not None:
+                funding_rate = _f(pick.get("rate"))
+                if funding_rate is not None:
+                    funding_pct = round(funding_rate * 100.0, 6)
+        except Exception as e:  # noqa: BLE001
+            out["funding_error"] = str(e)[:120]
+
+        out.update(
+            {
+                "ok": True,
+                "symbol": m.get("symbol") or "LIT",
+                "last": last,
+                "mark": mark,
+                "index": index,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "mid": round(mid, 6) if mid is not None else None,
+                "spread": round(spread, 6) if spread is not None else None,
+                "spread_bps": spread_bps,
+                "daily_volume_usd": round(vol_quote, 2) if vol_quote is not None else None,
+                "daily_volume_base": round(vol_base, 2) if vol_base is not None else None,
+                "open_interest": round(oi, 2) if oi is not None else None,
+                "daily_trades": m.get("daily_trades_count"),
+                "daily_change_pct": _f(m.get("daily_price_change")),
+                "funding_rate": funding_rate,
+                "funding_pct": funding_pct,
+                "book": {"bids": bids, "asks": asks, "levels": BOOK_LEVELS},
+            }
+        )
+        return out
+    except Exception as e:  # noqa: BLE001
+        out["error"] = str(e)[:200]
+        return out
+    finally:
+        if started_here:
+            try:
+                await srv.runtime.stop()
+            except Exception:
+                pass
+
+
+def _maybe_kill_alert(
+    *,
+    kill_room: float,
+    sess_pnl: float,
+    kill: float,
+    lot: float,
+) -> dict:
+    """Loud TG when kill-room < $15; cooldown to avoid spam."""
+    state = _load(KILL_ALERT_STATE, {})
+    now = int(time.time())
+    alert: dict = {
+        "threshold_usd": KILL_ALERT_USD,
+        "kill_room_usd": round(kill_room, 2),
+        "due": False,
+        "sent": False,
+        "critical": kill_room < KILL_ALERT_USD,
+    }
+    if kill_room >= KILL_ALERT_USD:
+        if state.get("latched"):
+            KILL_ALERT_STATE.write_text(
+                json.dumps({"latched": False, "cleared_ts": now, "ts": now}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        alert["status"] = "ok"
+        return alert
+
+    last = int(state.get("last_sent_ts") or 0)
+    cooled = (now - last) >= KILL_ALERT_COOLDOWN_SEC
+    alert["due"] = True
+    alert["status"] = "critical"
+    alert["cooldown_left_sec"] = max(0, KILL_ALERT_COOLDOWN_SEC - (now - last)) if last else 0
+    if not cooled:
+        return alert
+
+    text = (
+        f"⚠️ KILL-ROOM CRITICAL: осталось ${kill_room:.2f} "
+        f"(порог алерта ${KILL_ALERT_USD:.0f})\n"
+        f"session_pnl={sess_pnl:+.2f}$  kill={kill:.0f}$  lot=${lot:.0f}\n"
+        f"Близко к stop-session — без новых входов, следи / закрой при необходимости."
+    )
+    try:
+        from telegram_notify import send_message
+
+        send_message(text, log_source="kill_alert")
+        alert["sent"] = True
+        KILL_ALERT_STATE.write_text(
+            json.dumps(
+                {
+                    "latched": True,
+                    "last_sent_ts": now,
+                    "last_kill_room": round(kill_room, 2),
+                    "ts": now,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except Exception as e:  # noqa: BLE001
+        alert["error"] = str(e)[:160]
+    return alert
 
 
 def _latest_report(market_id: int = 120) -> dict:
@@ -217,6 +410,15 @@ def build_brief() -> dict:
         is_new = True
 
     pos, line = _position_block()
+    try:
+        market = asyncio.run(_market_snapshot(120))
+    except Exception as e:  # noqa: BLE001
+        market = {"ok": False, "market_id": 120, "error": str(e)[:200]}
+
+    kill_alert = _maybe_kill_alert(
+        kill_room=kill_room, sess_pnl=sess_pnl, kill=kill, lot=lot
+    )
+
     hint = _decision_hint(
         pos=pos,
         roc=roc,
@@ -227,19 +429,30 @@ def build_brief() -> dict:
     )
     if is_new:
         hint["report_new"] = True
+    if kill_alert.get("critical"):
+        hint["kill_room_critical"] = True
+        hint["no_new_opens"] = True
     # Idle-friendly: don't wake agent solely for a new report while holding
-    hint["attention"] = bool(pending_count > 0 or hint.get("action") != "hold")
+    hint["attention"] = bool(
+        pending_count > 0
+        or hint.get("action") != "hold"
+        or kill_alert.get("critical")
+    )
+
+    last_px = market.get("last") or market.get("mark")
+    line_core = line or (
+        f"LIT {pos.get('side') or 'flat'} "
+        f"uPnL={pos.get('unrealized_pnl')} / sess {sess_pnl:+.2f}"
+    )
+    if last_px is not None and " @" not in str(line_core):
+        line_core = f"{line_core} @ {float(last_px):.4f}"
 
     brief = {
         "ok": True,
         "ts": now,
-        "ts_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        "ts_iso": time.strftime("%m-%d %H:%M", time.gmtime(now)),
         "age_sec": 0,
-        "line": line
-        or (
-            f"LIT {pos.get('side') or 'flat'} "
-            f"uPnL={pos.get('unrealized_pnl')} / sess {sess_pnl:+.2f}"
-        ),
+        "line": line_core,
         "tg": {
             "pending_count": pending_count,
             "pending": [
@@ -248,14 +461,17 @@ def build_brief() -> dict:
             ],
         },
         "position": pos,
+        "market": market,
         "session": {
             "session_pnl": sess_pnl,
             "kill": kill,
             "kill_room_usd": round(kill_room, 2),
+            "kill_alert_usd": KILL_ALERT_USD,
             "lot": lot,
             "sl_pct": round(sl_pct, 4) if sl_pct is not None else None,
             "tp_pct": float(trade.get("tp_pct") or 0.5),
         },
+        "kill_alert": kill_alert,
         "roc": roc,
         "bias": {
             "working_tf": "1h",

@@ -328,6 +328,141 @@ async def get_active_orders(market: Optional[str] = None, market_id: Optional[in
     return _json(_to_plain(resp))
 
 
+@mcp.tool()
+async def get_account_trades(
+    market_id: int = 120,
+    limit: int = 50,
+    hours: int = 24,
+) -> str:
+    """Account fill history on Lighter (your trades), newest first.
+
+    Use when the user asks about past trades / 24h activity / PnL from fills.
+    Each row includes size, price, usd_amount, timestamp, and account_pnl if present.
+    """
+    account_index, api_key_index, _ = _require_trading_env()
+    signer = await runtime.ensure_signer()
+    auth, err = signer.create_auth_token_with_expiry(
+        deadline=3600,
+        api_key_index=api_key_index,
+    )
+    if err:
+        raise RuntimeError(f"auth token error: {err}")
+    lim = max(1, min(100, int(limit or 50)))
+    assert runtime.order_api is not None
+    resp = await runtime.order_api.trades(
+        sort_by="timestamp",
+        limit=lim,
+        authorization=auth,
+        account_index=account_index,
+        market_id=int(market_id),
+        sort_dir="desc",
+    )
+    plain = _to_plain(resp)
+    trades = plain.get("trades") if isinstance(plain, dict) else None
+    if not isinstance(trades, list):
+        trades = []
+    cutoff_ms = int((time.time() - max(1, int(hours or 24)) * 3600) * 1000)
+    slim: list[dict[str, Any]] = []
+    for t in trades:
+        if not isinstance(t, dict):
+            continue
+        ts = int(t.get("timestamp") or 0)
+        if ts and ts < cutoff_ms:
+            continue
+        ask_acc = int(t.get("ask_account_id") or -1)
+        bid_acc = int(t.get("bid_account_id") or -1)
+        is_buy = bid_acc == account_index
+        is_sell = ask_acc == account_index
+        if not (is_buy or is_sell):
+            continue
+        pnl_key = "bid_account_pnl" if is_buy else "ask_account_pnl"
+        slim.append(
+            {
+                "trade_id": t.get("trade_id") or t.get("trade_id_str"),
+                "ts_ms": ts,
+                "side": "buy" if is_buy else "sell",
+                "size": t.get("size"),
+                "price": t.get("price"),
+                "usd": t.get("usd_amount"),
+                "pnl": t.get(pnl_key),
+                "sign_changed": bool(
+                    t.get("taker_position_sign_changed")
+                    or t.get("maker_position_sign_changed")
+                ),
+            }
+        )
+    return _json(
+        {
+            "ok": True,
+            "account_index": account_index,
+            "market_id": int(market_id),
+            "hours": int(hours),
+            "count": len(slim),
+            "trades": slim,
+        }
+    )
+
+
+@mcp.tool()
+async def get_account_pnl(
+    hours: int = 24,
+    resolution: str = "1h",
+) -> str:
+    """Account equity / trade_pnl time series from Lighter (ignore transfers by default).
+
+    Use for «изменение счёта за сутки» — compare first/last trade_pnl and volume.
+    """
+    account_index, _, _ = _require_trading_env()
+    end = int(time.time())
+    hrs = max(1, min(168, int(hours or 24)))
+    start = end - hrs * 3600
+    res = resolution if resolution in ("1h", "4h", "1d") else "1h"
+    count_back = min(200, max(2, hrs if res == "1h" else hrs // 4 if res == "4h" else hrs // 24))
+    assert runtime.account_api is not None
+    resp = await runtime.account_api.pnl(
+        by="index",
+        value=str(account_index),
+        resolution=res,
+        start_timestamp=start,
+        end_timestamp=end,
+        count_back=count_back,
+        ignore_transfers=True,
+    )
+    plain = _to_plain(resp)
+    series = plain.get("pnl") if isinstance(plain, dict) else None
+    if not isinstance(series, list):
+        series = []
+    first = series[0] if series else None
+    last = series[-1] if series else None
+    delta = None
+    try:
+        if isinstance(first, dict) and isinstance(last, dict):
+            delta = float(last.get("trade_pnl") or 0) - float(first.get("trade_pnl") or 0)
+    except (TypeError, ValueError):
+        delta = None
+    vol_sum = 0.0
+    for row in series:
+        if isinstance(row, dict):
+            try:
+                vol_sum += float(row.get("volume") or 0)
+            except (TypeError, ValueError):
+                pass
+    return _json(
+        {
+            "ok": True,
+            "account_index": account_index,
+            "hours": hrs,
+            "resolution": res,
+            "trade_pnl_start": (first or {}).get("trade_pnl") if isinstance(first, dict) else None,
+            "trade_pnl_end": (last or {}).get("trade_pnl") if isinstance(last, dict) else None,
+            "trade_pnl_delta": delta,
+            "volume_sum": round(vol_sum, 4),
+            "points": len(series),
+            "series_tail": series[-12:],
+        }
+    )
+
+
 async def _open_market(
     *,
     side: str,

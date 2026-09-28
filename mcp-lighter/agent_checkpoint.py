@@ -158,12 +158,12 @@ def render_handoff(payload: dict, checkpoint_id: int | None = None) -> str:
         f"- ROC: 1h sig=`{((brief.get('roc') or {}).get('1h') or {}).get('signal')}` "
         f"12h sig=`{((brief.get('roc') or {}).get('12h') or {}).get('signal')}`",
         "",
-        "## Continue trading",
-        f"- Read `mcp-lighter/_agent_tick_brief.json` each 2m (schtask refreshes it).",
+        "## Continue (observer)",
+        f"- Trading: schtask `botassistant-tg-queue-2m` → DeepSeek Pro (not Cursor /loop).",
+        f"- Optional read: `mcp-lighter/_agent_tick_brief.json` when the user asks.",
         f"- Strategy: {rules.get('indicator')} on {rules.get('working_tf')}, bias {rules.get('bias_tf')}.",
         f"- Lot ${rules.get('lot_base')}…${rules.get('lot_max')}, TP {rules.get('tp_pct')}, SL=kill-room, kill {rules.get('session_kill')}/+{rules.get('session_take_profit_stop')}.",
-        "- Idle: if brief action=hold and no TG → silent / one line. Do not re-fetch MCP.",
-        "- Files restored: `_agent_trade_state.json`, `_lit_session_state.json`, `_tg_control.json`.",
+        "- Do **not** start `/loop`. Files restored: `_agent_trade_state.json`, `_lit_session_state.json`, `_tg_control.json`.",
         "",
         "Paste this into a **new** Cursor chat after context grew too large.",
     ]
@@ -230,7 +230,7 @@ def bootstrap_tg_text(*, checkpoint_id: int | None, reason: str, line: str | Non
         "2) Paste & run:",
         BOOTSTRAP_CMD,
         "",
-        "Then agent continues /loop 2m from brief. IDE chat cannot be opened from TG.",
+        "Then Cursor is observer only (no /loop). DeepSeek Pro trades via schtask. IDE chat cannot be opened from TG.",
     ]
     return "\n".join(b for b in bits if b is not None)
 

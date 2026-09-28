@@ -21,12 +21,51 @@ ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
 TG_API = "https://api.telegram.org"
-PY = ROOT / ".venv" / "Scripts" / "python.exe"
+# Poller may run on base Python+PYTHONPATH (see start_telegram_bot.ps1) to avoid a
+# Windows venv-launcher double getUpdates. Trader child must use the real venv exe.
+VENV_PY = ROOT / ".venv" / "Scripts" / "python.exe"
 TRADER = ROOT / "deepseek_trader_agent.py"
+LOCK_PATH = ROOT / "_telegram_bot.lock"
 
 sys.path.insert(0, str(ROOT))
 from telegram_notify import build_status_text, send_message, telegram_config  # noqa: E402
 from tg_queue import enqueue, load_control  # noqa: E402
+
+
+def _acquire_lock() -> None:
+    """Single instance: two getUpdates pollers drop / steal user messages."""
+    import os
+    import time
+
+    my_pid = os.getpid()
+    if LOCK_PATH.is_file():
+        try:
+            old = int(LOCK_PATH.read_text(encoding="utf-8").strip().split()[0])
+        except (OSError, ValueError):
+            old = 0
+        if old and old != my_pid:
+            try:
+                os.kill(old, 0)
+            except OSError:
+                pass  # stale
+            else:
+                raise SystemExit(
+                    f"telegram_bot already running (pid={old}). "
+                    "Kill the duplicate — two pollers break inbound TG."
+                )
+    LOCK_PATH.write_text(f"{my_pid} {int(time.time())}\n", encoding="utf-8")
+
+
+def _release_lock() -> None:
+    import os
+
+    try:
+        if LOCK_PATH.is_file():
+            cur = int(LOCK_PATH.read_text(encoding="utf-8").strip().split()[0])
+            if cur == os.getpid():
+                LOCK_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 HELP = """LIT agent bridge
 
@@ -147,13 +186,20 @@ async def handle_update(update: dict[str, Any]) -> None:
 
 async def _run_trader_now() -> None:
     """Run DeepSeek Pro trader once so pending_tg gets an immediate reply."""
-    py = str(PY if PY.is_file() else sys.executable)
+    import os
+
+    py = str(VENV_PY if VENV_PY.is_file() else sys.executable)
+    env = os.environ.copy()
+    # Don't inherit poller's PYTHONPATH — it breaks venv (pywintypes / pywin32).
+    env.pop("PYTHONPATH", None)
+    env["VIRTUAL_ENV"] = str(ROOT / ".venv")
     proc = await asyncio.create_subprocess_exec(
         py,
         str(TRADER),
         cwd=str(ROOT),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        env=env,
     )
     out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
     out = (out_b or b"").decode("utf-8", errors="replace")
@@ -190,10 +236,13 @@ async def poll_loop() -> None:
 
 def main() -> int:
     telegram_config()
+    _acquire_lock()
     try:
         asyncio.run(poll_loop())
     except KeyboardInterrupt:
         print("stopped", flush=True)
+    finally:
+        _release_lock()
     return 0
 
 

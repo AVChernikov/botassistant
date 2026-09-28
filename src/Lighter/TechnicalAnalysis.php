@@ -786,4 +786,254 @@ final class TechnicalAnalysis
 
         return $acc + $sampleBonus + $returnComponent;
     }
+
+    /**
+     * Pearson correlation; null if fewer than 3 paired points or zero variance.
+     *
+     * @param list<float> $xs
+     * @param list<float> $ys
+     */
+    public static function pearson(array $xs, array $ys): ?float
+    {
+        $n = min(count($xs), count($ys));
+        if ($n < 3) {
+            return null;
+        }
+        $sx = 0.0;
+        $sy = 0.0;
+        for ($i = 0; $i < $n; $i++) {
+            $sx += $xs[$i];
+            $sy += $ys[$i];
+        }
+        $mx = $sx / $n;
+        $my = $sy / $n;
+        $num = 0.0;
+        $dx = 0.0;
+        $dy = 0.0;
+        for ($i = 0; $i < $n; $i++) {
+            $a = $xs[$i] - $mx;
+            $b = $ys[$i] - $my;
+            $num += $a * $b;
+            $dx += $a * $a;
+            $dy += $b * $b;
+        }
+        if ($dx <= 0.0 || $dy <= 0.0) {
+            return null;
+        }
+
+        return $num / sqrt($dx * $dy);
+    }
+
+    /**
+     * Mean of non-null floats.
+     *
+     * @param list<float|null> $series
+     */
+    public static function seriesMean(array $series): ?float
+    {
+        $sum = 0.0;
+        $n = 0;
+        foreach ($series as $v) {
+            if ($v === null) {
+                continue;
+            }
+            $sum += (float) $v;
+            $n++;
+        }
+
+        return $n > 0 ? $sum / $n : null;
+    }
+
+    /**
+     * Volatility + directional accuracy + corr(vol, hit) per method × timeframe.
+     *
+     * Pipeline: (1) vol series  (2) signal accuracy  (3) Pearson vol↔outcome.
+     *
+     * @param array<string, list<array<string, mixed>>> $framesByResolution
+     * @return array{
+     *   volatility: array<string, array<string, mixed>>,
+     *   results: list<array<string, mixed>>,
+     *   by_method: array<string, list<array<string, mixed>>>,
+     *   matrix: array<string, array<string, array<string, mixed>>>,
+     *   vol_metric: string,
+     *   horizon: int
+     * }
+     */
+    public static function runVolAccuracyReport(
+        array $framesByResolution,
+        int $horizon = 1,
+        string $volMetric = 'ATR(14) pct',
+    ): array {
+        $volMetric = in_array($volMetric, self::VOLATILITY_METHODS, true)
+            ? $volMetric
+            : 'ATR(14) pct';
+
+        $volatility = [];
+        $results = [];
+        $byMethod = [];
+        $matrix = [];
+
+        foreach ($framesByResolution as $resolution => $candles) {
+            if (count($candles) < 40) {
+                continue;
+            }
+            $closes = self::closes($candles);
+            $atrPct = self::atrPct($candles, 14);
+            $rv = self::realizedVolLog($closes, 48);
+            $bbw = self::bollingerWidth($closes, 20, 2.0);
+            $primary = match ($volMetric) {
+                'RV(48) log' => $rv,
+                'Bollinger(20,2) width' => $bbw,
+                default => $atrPct,
+            };
+
+            $volatility[(string) $resolution] = [
+                'resolution' => (string) $resolution,
+                'candles' => count($candles),
+                'atr_pct_mean' => self::seriesMean($atrPct),
+                'rv_log_mean' => self::seriesMean($rv),
+                'bb_width_mean' => self::seriesMean($bbw),
+                'primary_metric' => $volMetric,
+                'primary_mean' => self::seriesMean($primary),
+            ];
+
+            $all = self::generateAllSignals($candles);
+            foreach ($all as $method => $signals) {
+                $stats = self::evaluate($candles, $signals, $horizon);
+                if (($stats['signals'] ?? 0) < 3) {
+                    continue;
+                }
+
+                $vols = [];
+                $hits = [];
+                $n = count($closes);
+                for ($i = 0; $i < $n; $i++) {
+                    $sig = $signals[$i] ?? 0;
+                    if ($sig === 0 || $i + $horizon >= $n) {
+                        continue;
+                    }
+                    $vol = $primary[$i] ?? null;
+                    if ($vol === null) {
+                        continue;
+                    }
+                    $move = $closes[$i + $horizon] - $closes[$i];
+                    if ($move == 0.0) {
+                        continue;
+                    }
+                    $ok = (($sig > 0) === ($move > 0)) ? 1.0 : 0.0;
+                    $vols[] = (float) $vol;
+                    $hits[] = $ok;
+                }
+
+                $corr = self::pearson($vols, $hits);
+                $buckets = self::accuracyByVolTercile($vols, $hits);
+
+                $row = [
+                    'method' => $method,
+                    'resolution' => (string) $resolution,
+                    'candles' => count($candles),
+                    'signals' => $stats['signals'],
+                    'correct' => $stats['correct'],
+                    'accuracy' => $stats['accuracy'],
+                    'accuracy_last5' => $stats['accuracy_last5'],
+                    'strategy_return_pct' => $stats['strategy_return_pct'],
+                    'profit_factor' => $stats['profit_factor'],
+                    'score' => self::score($stats),
+                    'vol_metric' => $volMetric,
+                    'vol_mean_at_signals' => count($vols) > 0 ? array_sum($vols) / count($vols) : null,
+                    'vol_pairs' => count($vols),
+                    'corr_vol_accuracy' => $corr,
+                    'accuracy_vol_low' => $buckets['low'],
+                    'accuracy_vol_mid' => $buckets['mid'],
+                    'accuracy_vol_high' => $buckets['high'],
+                    'n_vol_low' => $buckets['n_low'],
+                    'n_vol_mid' => $buckets['n_mid'],
+                    'n_vol_high' => $buckets['n_high'],
+                    'tf_vol_mean' => $volatility[(string) $resolution]['primary_mean'],
+                ];
+                $results[] = $row;
+                $byMethod[$method][] = $row;
+                $matrix[$method][(string) $resolution] = [
+                    'accuracy' => $row['accuracy'],
+                    'corr' => $row['corr_vol_accuracy'],
+                    'signals' => $row['signals'],
+                    'vol_mean' => $row['vol_mean_at_signals'],
+                ];
+            }
+        }
+
+        usort($results, static function (array $a, array $b): int {
+            $ca = $a['corr_vol_accuracy'];
+            $cb = $b['corr_vol_accuracy'];
+            if ($ca === null && $cb === null) {
+                return ($b['accuracy'] ?? 0) <=> ($a['accuracy'] ?? 0);
+            }
+            if ($ca === null) {
+                return 1;
+            }
+            if ($cb === null) {
+                return -1;
+            }
+            // strongest |corr| first
+            return (abs((float) $cb) <=> abs((float) $ca))
+                ?: (($b['accuracy'] ?? 0) <=> ($a['accuracy'] ?? 0));
+        });
+
+        return [
+            'volatility' => $volatility,
+            'results' => $results,
+            'by_method' => $byMethod,
+            'matrix' => $matrix,
+            'vol_metric' => $volMetric,
+            'horizon' => $horizon,
+        ];
+    }
+
+    /**
+     * Accuracy in low / mid / high volatility terciles (by signal-time vol).
+     *
+     * @param list<float> $vols
+     * @param list<float> $hits 0 or 1
+     * @return array{low:?float,mid:?float,high:?float,n_low:int,n_mid:int,n_high:int}
+     */
+    private static function accuracyByVolTercile(array $vols, array $hits): array
+    {
+        $n = min(count($vols), count($hits));
+        if ($n < 3) {
+            return [
+                'low' => null, 'mid' => null, 'high' => null,
+                'n_low' => 0, 'n_mid' => 0, 'n_high' => 0,
+            ];
+        }
+        $idx = range(0, $n - 1);
+        usort($idx, static fn (int $i, int $j): int => $vols[$i] <=> $vols[$j]);
+        $t1 = (int) floor($n / 3);
+        $t2 = (int) floor(2 * $n / 3);
+        $groups = ['low' => [], 'mid' => [], 'high' => []];
+        foreach ($idx as $rank => $i) {
+            if ($rank < $t1) {
+                $groups['low'][] = $hits[$i];
+            } elseif ($rank < $t2) {
+                $groups['mid'][] = $hits[$i];
+            } else {
+                $groups['high'][] = $hits[$i];
+            }
+        }
+        $avg = static function (array $xs): ?float {
+            if ($xs === []) {
+                return null;
+            }
+
+            return array_sum($xs) / count($xs);
+        };
+
+        return [
+            'low' => $avg($groups['low']),
+            'mid' => $avg($groups['mid']),
+            'high' => $avg($groups['high']),
+            'n_low' => count($groups['low']),
+            'n_mid' => count($groups['mid']),
+            'n_high' => count($groups['high']),
+        ];
+    }
 }
