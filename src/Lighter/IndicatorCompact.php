@@ -12,8 +12,12 @@ final class IndicatorCompact
     /**
      * @return array<string, mixed>
      */
-    public static function build(string $dbPath, ?int $marketId = null, int $signalEventsPerTf = 40): array
-    {
+    public static function build(
+        string $dbPath,
+        ?int $marketId = null,
+        int $signalEventsPerTf = 40,
+        int $candlesPerTf = 24,
+    ): array {
         $root = dirname(__DIR__, 2);
         $py = $root . DIRECTORY_SEPARATOR . 'mcp-lighter' . DIRECTORY_SEPARATOR . '.venv' . DIRECTORY_SEPARATOR . 'Scripts' . DIRECTORY_SEPARATOR . 'python.exe';
         $script = $root . DIRECTORY_SEPARATOR . 'mcp-lighter' . DIRECTORY_SEPARATOR . 'indicator_compact.py';
@@ -30,6 +34,8 @@ final class IndicatorCompact
             escapeshellarg($dbPath),
             '--events',
             (string) max(5, min(200, $signalEventsPerTf)),
+            '--candles',
+            (string) max(5, min(120, $candlesPerTf)),
         ];
         if ($marketId !== null) {
             $args[] = '--market-id';

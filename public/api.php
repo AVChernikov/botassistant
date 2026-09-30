@@ -289,7 +289,9 @@ try {
             $marketId = $marketId === false ? 120 : $marketId;
             $events = filter_var($_GET['events'] ?? 40, FILTER_VALIDATE_INT);
             $events = $events === false ? 40 : max(5, min(200, $events));
-            $compact = IndicatorCompact::build($cfg->dbPath(), $marketId, $events);
+            $candles = filter_var($_GET['candles'] ?? 24, FILTER_VALIDATE_INT);
+            $candles = $candles === false ? 24 : max(5, min(120, $candles));
+            $compact = IndicatorCompact::build($cfg->dbPath(), $marketId, $events, $candles);
             if (!empty($_GET['gzip'])) {
                 $json = json_encode($compact, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 jsonOut([

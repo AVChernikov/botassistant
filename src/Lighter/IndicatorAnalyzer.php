@@ -23,7 +23,12 @@ final class IndicatorAnalyzer
   "risks": ["..."],
   "actions": ["..."]
 }
-Ключи снимка: r=return% pf=profit_factor a=accuracy n=signals e=события сигналов vol=волатильность.
+Ключи снимка v2:
+- rank: r=return% pf=profit_factor a=accuracy n=signals ls=last_signal age=sec warm=достаточно_сигналов
+- e: события сигналов [t,i,s,v,c,age]
+- ohlc: последние свечи [t,o,h,l,c,v] oldest→newest
+- vs: сводка объёма/диапазона по этим свечам (v_sum,v_avg,v_last,range%,ret%)
+- vol: ATR/RV/BBW (+age), pos: позиция/session_pnl если есть
 PROMPT;
 
     public const CLARIFY_PROMPT = <<<'PROMPT'
