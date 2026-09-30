@@ -619,6 +619,10 @@ try {
                 'lot_usd' => isset($_GET['lot_usd']) || isset($_POST['lot_usd'])
                     ? (float) ($_GET['lot_usd'] ?? $_POST['lot_usd'])
                     : null,
+                'resize_lot' => filter_var($_GET['resize_lot'] ?? $_POST['resize_lot'] ?? false, FILTER_VALIDATE_BOOLEAN),
+                'mark_price' => isset($_GET['mark_price']) || isset($_POST['mark_price'])
+                    ? (float) ($_GET['mark_price'] ?? $_POST['mark_price'])
+                    : 0.0,
             ];
             $out = Sim1mEngine::setLevels($cfg, $opts, $sid === false ? null : $sid);
             jsonOut($out, !empty($out['ok']) ? 200 : 400);
@@ -702,6 +706,10 @@ try {
                 'lot_usd' => isset($_GET['lot_usd']) || isset($_POST['lot_usd'])
                     ? (float) ($_GET['lot_usd'] ?? $_POST['lot_usd'])
                     : null,
+                'resize_lot' => filter_var($_GET['resize_lot'] ?? $_POST['resize_lot'] ?? false, FILTER_VALIDATE_BOOLEAN),
+                'mark_price' => isset($_GET['mark_price']) || isset($_POST['mark_price'])
+                    ? (float) ($_GET['mark_price'] ?? $_POST['mark_price'])
+                    : 0.0,
             ];
             $out = Live1mEngine::setLevels($cfg, $opts, $sid === false ? null : $sid);
             jsonOut($out, !empty($out['ok']) ? 200 : 400);

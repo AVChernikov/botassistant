@@ -215,7 +215,7 @@ declare(strict_types=1);
         <div class="levels-row tp" id="tpRow">
           <span class="lab tp">TP</span>
         </div>
-        <p class="levels-hint">Лот / SL / TP применяются к <b>следующей</b> сделке. При открытии позиции TP и SL перерисовываются от entry (SL красный, TP зелёный). Высота графика растёт пропорционально.</p>
+        <p class="levels-hint">Radio лота — на <b>следующую</b> сделку. Кнопка «лот → поз.» — добор/сокращение <b>текущей</b> позиции до выбранного лота по mark. SL/TP → меняют текущие уровни.</p>
       </div>
       <p class="chart-sub">График 1m; метод выбирает DeepSeek Flash.</p>
     </div>
@@ -353,13 +353,13 @@ declare(strict_types=1);
         lab.innerHTML = `<input type="radio" name="tpLv" value="${v}"> ${v}%`;
         tpRow.appendChild(lab);
       });
-      lotRow.appendChild(makeCycleBtn('lot', 'лот →'));
+      lotRow.appendChild(makeCycleBtn('lot', 'лот → поз.'));
       slRow.appendChild(makeCycleBtn('sl', 'SL →'));
       tpRow.appendChild(makeCycleBtn('tp', 'TP →'));
       syncLevelsUi();
-      lotRow.querySelectorAll('input').forEach((el) => el.addEventListener('change', onLevelsChange));
-      slRow.querySelectorAll('input').forEach((el) => el.addEventListener('change', onLevelsChange));
-      tpRow.querySelectorAll('input').forEach((el) => el.addEventListener('change', onLevelsChange));
+      lotRow.querySelectorAll('input').forEach((el) => el.addEventListener('change', () => onLevelsChange({ resizeLot: false })));
+      slRow.querySelectorAll('input').forEach((el) => el.addEventListener('change', () => onLevelsChange({ resizeLot: false })));
+      tpRow.querySelectorAll('input').forEach((el) => el.addEventListener('change', () => onLevelsChange({ resizeLot: false })));
     }
 
     function makeCycleBtn(kind, label) {
@@ -368,17 +368,19 @@ declare(strict_types=1);
       btn.className = 'btn-cycle';
       btn.textContent = label;
       btn.title = kind === 'lot'
-        ? 'Увеличить лот на следующий шаг (для следующей сделки)'
-        : 'Следующий уровень ' + kind.toUpperCase() + ' (для следующей сделки)';
+        ? 'Применить выбранный лот к текущей позиции (добор/сокращение по mark). Radio без кнопки — только на след. сделку.'
+        : 'Сменить текущий уровень ' + kind.toUpperCase() + ' на следующий';
       btn.addEventListener('click', () => cycleLevel(kind));
       return btn;
     }
 
     function cycleLevel(kind) {
       if (kind === 'lot') {
-        const i = LOT_OPTS.indexOf(Number(levelsState.lot));
-        levelsState.lot = i < 0 ? LOT_OPTS[0] : LOT_OPTS[Math.min(LOT_OPTS.length - 1, i + 1)];
-      } else if (kind === 'sl') {
+        readLevelsFromUi();
+        onLevelsChange({ resizeLot: true });
+        return;
+      }
+      if (kind === 'sl') {
         const i = SL_OPTS.indexOf(Number(levelsState.sl));
         levelsState.sl = SL_OPTS[(i < 0 ? 0 : i + 1) % SL_OPTS.length];
       } else if (kind === 'tp') {
@@ -387,7 +389,7 @@ declare(strict_types=1);
       }
       syncLevelsUi();
       saveLevelsLocal();
-      onLevelsChange();
+      onLevelsChange({ resizeLot: false });
     }
 
     function syncLevelsUi() {
@@ -413,17 +415,8 @@ declare(strict_types=1);
     }
 
     function chartLevelsFromState() {
-      // In position: show TP/SL frozen at open. Flat: preview next-entry levels from mark.
-      if (lastSide && lastEntry > 0 && lastTp != null && lastSl != null) {
-        const levels = [
-          { price: Number(lastTp), color: '#0f6b4c', dash: [6, 4], label: 'TP', width: 1.4 },
-          { price: Number(lastSl), color: '#b42318', dash: [6, 4], label: 'SL', width: 1.4 },
-        ];
-        if (window.Sim1mChart) Sim1mChart.setLevels(levels);
-        return;
-      }
-      const base = lastMark;
       const side = lastSide || 'long';
+      const base = (lastSide && lastEntry > 0) ? lastEntry : lastMark;
       if (!base || !(base > 0)) {
         if (window.Sim1mChart) Sim1mChart.setLevels([]);
         return;
@@ -444,18 +437,26 @@ declare(strict_types=1);
       if (window.Sim1mChart) Sim1mChart.setLevels(levels);
     }
 
-    async function onLevelsChange() {
+    async function onLevelsChange(opts = {}) {
       readLevelsFromUi();
       chartLevelsFromState();
       if (!sessionId) return;
+      const resizeLot = !!opts.resizeLot;
       try {
-        await api(SET_LEVELS_ACTION, {
+        const params = {
           session_id: String(sessionId),
           lot_usd: String(levelsState.lot),
           tp_levels: JSON.stringify([levelsState.tp]),
           sl_levels: JSON.stringify([levelsState.sl]),
-        });
-        if (!lastSide) await refresh();
+        };
+        if (resizeLot) {
+          params.resize_lot = '1';
+          if (lastMark) params.mark_price = String(lastMark);
+        }
+        const res = await api(SET_LEVELS_ACTION, params);
+        if (res && res.tp_price != null) lastTp = Number(res.tp_price);
+        if (res && res.sl_price != null) lastSl = Number(res.sl_price);
+        await refresh();
       } catch (e) {
         console.error(e);
       }

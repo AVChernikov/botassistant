@@ -547,25 +547,244 @@ PROMPT;
     }
 
     /**
-     * Update TP/SL % levels and/or lot for the *next* entry only.
-     * Does not move live protective orders on an open position.
+     * Update lot (next entry) and/or SL/TP %.
+     * If a position is open, SL/TP change recalculates prices from entry and re-places LIVE orders.
      *
      * @param array<string, mixed> $opts
      * @return array<string, mixed>
      */
     public static function setLevels(IndicatorConfig $cfg, array $opts, ?int $sessionId = null): array
     {
+        $db = $cfg->dbPath();
+        $wrap = Live1mStore::session($db, $sessionId);
+        $sess = $wrap['session'] ?? null;
+
         $payload = [
             'tp_levels' => $opts['tp_levels'] ?? null,
             'sl_levels' => $opts['sl_levels'] ?? null,
             'lot_usd' => $opts['lot_usd'] ?? null,
-            // never rewrite active position tp/sl from UI — those are set on open
             'tp_price' => null,
             'sl_price' => null,
-            'defer_prices' => true,
         ];
 
-        return Live1mStore::setLevels($cfg->dbPath(), $payload, $sessionId);
+        $exchange = null;
+        $inPos = is_array($sess)
+            && ($sess['status'] ?? '') === 'running'
+            && !empty($sess['position_side'])
+            && (float) ($sess['entry_price'] ?? 0) > 0
+            && (float) ($sess['position_size'] ?? 0) > 0;
+
+        $touchTpsl = array_key_exists('tp_levels', $opts) || array_key_exists('sl_levels', $opts);
+
+        if ($inPos && $touchTpsl) {
+            $side = (string) $sess['position_side'];
+            $entry = (float) $sess['entry_price'];
+            $size = (float) $sess['position_size'];
+            // Merge pending levels onto session config for price calc
+            $tmp = $sess;
+            $cfgJson = [];
+            $raw = $sess['config_json'] ?? null;
+            if (is_string($raw) && $raw !== '') {
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded)) {
+                    $cfgJson = $decoded;
+                }
+            } elseif (is_array($raw)) {
+                $cfgJson = $raw;
+            }
+            if (isset($opts['tp_levels'])) {
+                $cfgJson['tp_levels'] = $opts['tp_levels'];
+            }
+            if (isset($opts['sl_levels'])) {
+                $cfgJson['sl_levels'] = $opts['sl_levels'];
+            }
+            $tmp['config_json'] = $cfgJson;
+            [$tpLevels, $slLevels] = self::levelsFromSession($tmp);
+            $prices = self::levelPrices($side, $entry, $tpLevels, $slLevels);
+            $payload['tp_price'] = $prices['tp'][0] ?? null;
+            $payload['sl_price'] = $prices['sl'][0] ?? null;
+            $payload['tp_levels'] = $tpLevels;
+            $payload['sl_levels'] = $slLevels;
+
+            self::$activeMarketId = (int) ($sess['market_id'] ?? 120);
+            $oldTp = isset($sess['tp_price']) ? (float) $sess['tp_price'] : null;
+            $oldSl = isset($sess['sl_price']) ? (float) $sess['sl_price'] : null;
+            $knownIds = [];
+            if (isset($cfgJson['tpsl_order_ids']) && is_array($cfgJson['tpsl_order_ids'])) {
+                $knownIds = $cfgJson['tpsl_order_ids'];
+            }
+            $exchange = self::placeLevelOrders(
+                $prices['tp'],
+                $prices['sl'],
+                $size,
+                $oldTp,
+                $oldSl,
+                $knownIds,
+            );
+            if (!empty($exchange['order_ids']) && is_array($exchange['order_ids'])) {
+                $payload['tpsl_order_ids'] = array_values($exchange['order_ids']);
+            } else {
+                $payload['tpsl_order_ids'] = [];
+            }
+        }
+
+        $out = Live1mStore::setLevels($db, $payload, $sessionId ?? (is_array($sess) ? (int) $sess['id'] : null));
+        if (!empty($out['ok']) && $inPos && $touchTpsl) {
+            $out['tp_price'] = $payload['tp_price'];
+            $out['sl_price'] = $payload['sl_price'];
+            $out['applied_to_position'] = true;
+        }
+        $out['exchange'] = $exchange;
+
+        $resize = !empty($opts['resize_lot']);
+        if ($resize && !empty($out['ok'])) {
+            $mark = isset($opts['mark_price']) ? (float) $opts['mark_price'] : 0.0;
+            $resized = self::resizeOpenLot($cfg, $sessionId ?? (is_array($sess) ? (int) $sess['id'] : null), $mark);
+            $out['resize'] = $resized;
+            if (!empty($resized['ok'])) {
+                $out['lot_usd'] = $resized['lot_usd'] ?? $out['lot_usd'] ?? null;
+                $out['position_size'] = $resized['position_size'] ?? null;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Scale open live session size to session lot_usd at mark (add or reduce).
+     *
+     * @return array<string, mixed>
+     */
+    public static function resizeOpenLot(IndicatorConfig $cfg, ?int $sessionId, float $markPrice = 0.0): array
+    {
+        $db = $cfg->dbPath();
+        $wrap = Live1mStore::session($db, $sessionId);
+        $sess = $wrap['session'] ?? null;
+        if (!is_array($sess) || ($sess['status'] ?? '') !== 'running') {
+            return ['ok' => false, 'error' => 'no running session'];
+        }
+        if (empty($sess['position_side']) || (float) ($sess['entry_price'] ?? 0) <= 0) {
+            return ['ok' => true, 'skipped' => true, 'reason' => 'flat — lot saved for next entry'];
+        }
+
+        $side = (string) $sess['position_side'];
+        $entry = (float) $sess['entry_price'];
+        $curSize = (float) ($sess['position_size'] ?? 0);
+        $lot = (float) ($sess['lot_usd'] ?? 0);
+        if ($lot <= 0 || $curSize <= 0) {
+            return ['ok' => false, 'error' => 'invalid lot/size'];
+        }
+        $mark = $markPrice > 0 ? $markPrice : $entry;
+        $targetSize = $lot / $mark;
+        $delta = $targetSize - $curSize;
+        $deltaUsd = abs($delta) * $mark;
+        if ($deltaUsd < 1.0) {
+            return [
+                'ok' => true,
+                'skipped' => true,
+                'reason' => 'already near target lot',
+                'lot_usd' => $lot,
+                'position_size' => $curSize,
+            ];
+        }
+
+        self::$activeMarketId = (int) ($sess['market_id'] ?? 120);
+        $ex = null;
+        $fees = (float) ($sess['fees'] ?? 0);
+        $realized = (float) ($sess['realized_pnl'] ?? 0);
+        if ($delta > 0) {
+            $op = $side === 'short' ? 'open_short' : 'open_long';
+            $ex = self::liveExec($op, [
+                '--market-id', (string) self::$activeMarketId,
+                '--quote-usd', (string) round($deltaUsd, 4),
+            ]);
+            if (empty($ex['ok']) && empty($ex['tx']) && empty($ex['preview'])) {
+                return ['ok' => false, 'error' => 'add size failed: ' . ($ex['error'] ?? json_encode($ex)), 'exchange' => $ex];
+            }
+            $fee = $deltaUsd * (self::FEE_BPS / 10000.0);
+            $fees += $fee;
+            $realized -= $fee;
+            $newSize = $curSize + $delta;
+        } else {
+            $closeSize = abs($delta);
+            $ex = self::liveExec('close', [
+                '--market-id', (string) self::$activeMarketId,
+                '--size', (string) $closeSize,
+            ]);
+            if (empty($ex['ok']) && empty($ex['tx']) && isset($ex['error'])) {
+                return ['ok' => false, 'error' => 'reduce size failed: ' . $ex['error'], 'exchange' => $ex];
+            }
+            $dir = $side === 'short' ? -1.0 : 1.0;
+            $pnl = $entry > 0 ? (($mark - $entry) / $entry) * ($closeSize * $entry) * $dir : 0.0;
+            // approx quote closed ≈ closeSize * entry for fee base
+            $fee = ($closeSize * $entry) * (self::FEE_BPS / 10000.0);
+            $fees += $fee;
+            $realized += ($pnl - $fee);
+            $newSize = max(0.0, $curSize - $closeSize);
+        }
+
+        $tp = isset($sess['tp_price']) ? (float) $sess['tp_price'] : null;
+        $sl = isset($sess['sl_price']) ? (float) $sess['sl_price'] : null;
+        [$tpLevels, $slLevels] = self::levelsFromSession($sess);
+        if ($tp === null || $sl === null) {
+            $prices = self::levelPrices($side, $entry, $tpLevels, $slLevels);
+            $tp = $prices['tp'][0] ?? $tp;
+            $sl = $prices['sl'][0] ?? $sl;
+        }
+        $cfgJson = [];
+        $raw = $sess['config_json'] ?? null;
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $cfgJson = $decoded;
+            }
+        } elseif (is_array($raw)) {
+            $cfgJson = $raw;
+        }
+        $knownIds = is_array($cfgJson['tpsl_order_ids'] ?? null) ? $cfgJson['tpsl_order_ids'] : [];
+        $prices = self::levelPrices($side, $entry, $tpLevels, $slLevels);
+        $tpsl = self::placeLevelOrders(
+            $prices['tp'],
+            $prices['sl'],
+            $newSize,
+            $tp,
+            $sl,
+            $knownIds,
+            true,
+        );
+
+        Live1mStore::setPosition($db, [
+            'side' => $side,
+            'size' => $newSize,
+            'entry' => $entry,
+            'tp' => $tp,
+            'sl' => $sl,
+            'reason' => sprintf('resize lot → $%s @ mark %.4f', (string) (int) $lot, $mark),
+            'fees' => $fees,
+            'realized_pnl' => $realized,
+            'lot_usd' => $lot,
+        ], (int) $sess['id']);
+
+        Live1mStore::setLevels($db, [
+            'lot_usd' => $lot,
+            'tp_levels' => $tpLevels,
+            'sl_levels' => $slLevels,
+            'tp_price' => $tp,
+            'sl_price' => $sl,
+            'tpsl_order_ids' => $tpsl['order_ids'] ?? [],
+        ], (int) $sess['id']);
+
+        return [
+            'ok' => true,
+            'lot_usd' => $lot,
+            'position_size' => $newSize,
+            'delta_usd' => round($delta > 0 ? $deltaUsd : -$deltaUsd, 4),
+            'mark' => $mark,
+            'fees' => round($fees, 4),
+            'realized_pnl' => round($realized, 4),
+            'exchange' => $ex,
+            'tpsl' => $tpsl,
+        ];
     }
 
     /**
@@ -684,35 +903,150 @@ PROMPT;
     }
 
     /**
-     * Place multi TP/SL reduce-only orders; size split evenly per side.
+     * Cancel existing LIVE TP/SL on market, then place new ones.
      *
      * @param list<float> $tpPrices
      * @param list<float> $slPrices
+     * @param list<int|string> $knownOrderIds
      * @return array<string, mixed>
      */
-    private static function placeLevelOrders(array $tpPrices, array $slPrices, float $size): array
-    {
-        $results = ['tp' => [], 'sl' => []];
+    private static function placeLevelOrders(
+        array $tpPrices,
+        array $slPrices,
+        float $size,
+        ?float $oldTp = null,
+        ?float $oldSl = null,
+        array $knownOrderIds = [],
+        bool $cancelBySize = true,
+    ): array {
+        $cancelled = self::cancelLiveTpSlOrders($size, $oldTp, $oldSl, $knownOrderIds, $cancelBySize);
+        $results = ['cancelled' => $cancelled, 'tp' => [], 'sl' => [], 'order_ids' => []];
         $nTp = max(1, count($tpPrices));
         $nSl = max(1, count($slPrices));
         $tpSize = $size / $nTp;
         $slSize = $size / $nSl;
         foreach ($tpPrices as $px) {
-            $results['tp'][] = self::liveExec('place_tp', [
+            $r = self::liveExec('place_tp', [
                 '--market-id', (string) self::$activeMarketId,
                 '--tp', (string) $px,
                 '--size', (string) $tpSize,
             ]);
+            $results['tp'][] = $r;
+            $oid = self::extractOrderIndex($r);
+            if ($oid !== null) {
+                $results['order_ids'][] = $oid;
+            }
         }
         foreach ($slPrices as $px) {
-            $results['sl'][] = self::liveExec('place_sl', [
+            $r = self::liveExec('place_sl', [
                 '--market-id', (string) self::$activeMarketId,
                 '--sl', (string) $px,
                 '--size', (string) $slSize,
             ]);
+            $results['sl'][] = $r;
+            $oid = self::extractOrderIndex($r);
+            if ($oid !== null) {
+                $results['order_ids'][] = $oid;
+            }
         }
 
         return $results;
+    }
+
+    /**
+     * Cancel take-profit / stop-loss that belong to this live lot
+     * (by stored ids, old trigger prices, or matching size).
+     *
+     * @param list<int|string> $knownOrderIds
+     * @return array<string, mixed>
+     */
+    private static function cancelLiveTpSlOrders(
+        float $size,
+        ?float $oldTp = null,
+        ?float $oldSl = null,
+        array $knownOrderIds = [],
+        bool $alsoBySize = false,
+    ): array {
+        $raw = self::liveExec('orders', [
+            '--market-id', (string) self::$activeMarketId,
+        ]);
+        $orders = [];
+        if (isset($raw['orders']) && is_array($raw['orders'])) {
+            $orders = $raw['orders'];
+        } elseif (isset($raw['data']['orders']) && is_array($raw['data']['orders'])) {
+            $orders = $raw['data']['orders'];
+        }
+        $known = [];
+        foreach ($knownOrderIds as $id) {
+            if ($id === null || $id === '') {
+                continue;
+            }
+            $known[(string) $id] = true;
+        }
+        $out = ['ok' => true, 'cancelled' => [], 'skipped' => []];
+        foreach ($orders as $o) {
+            if (!is_array($o)) {
+                continue;
+            }
+            $type = strtolower((string) ($o['type'] ?? ''));
+            $isTp = str_contains($type, 'take-profit') || str_contains($type, 'take_profit') || $type === 'tp';
+            $isSl = str_contains($type, 'stop-loss') || str_contains($type, 'stop_loss') || $type === 'sl';
+            if (!$isTp && !$isSl) {
+                continue;
+            }
+            $oid = $o['order_index'] ?? $o['order_id'] ?? null;
+            if ($oid === null) {
+                continue;
+            }
+            $trigger = isset($o['trigger_price']) ? (float) $o['trigger_price'] : null;
+            $ordSize = isset($o['remaining_base_amount'])
+                ? (float) $o['remaining_base_amount']
+                : (isset($o['initial_base_amount']) ? (float) $o['initial_base_amount'] : 0.0);
+            $matchId = isset($known[(string) $oid]);
+            $matchTp = $oldTp !== null && $trigger !== null && $oldTp > 0
+                && abs($trigger - $oldTp) / $oldTp <= 0.0025;
+            $matchSl = $oldSl !== null && $trigger !== null && $oldSl > 0
+                && abs($trigger - $oldSl) / $oldSl <= 0.0025;
+            $matchSize = $size > 0 && $ordSize > 0
+                && $ordSize <= $size * 1.25
+                && $ordSize >= $size * 0.75;
+            if (!($matchId || $matchTp || $matchSl || ($alsoBySize && $matchSize))) {
+                $out['skipped'][] = ['order_index' => $oid, 'type' => $type, 'trigger' => $trigger, 'size' => $ordSize];
+                continue;
+            }
+            $cx = self::liveExec('cancel', [
+                '--market-id', (string) self::$activeMarketId,
+                '--order-index', (string) $oid,
+            ]);
+            $out['cancelled'][] = ['order_index' => $oid, 'type' => $type, 'trigger' => $trigger, 'result' => $cx];
+        }
+
+        return $out;
+    }
+
+    /** @param array<string, mixed> $placeResult */
+    private static function extractOrderIndex(array $placeResult): int|string|null
+    {
+        foreach (['order_index', 'order_id'] as $k) {
+            if (isset($placeResult[$k]) && $placeResult[$k] !== '' && $placeResult[$k] !== null) {
+                return is_numeric($placeResult[$k]) ? (int) $placeResult[$k] : (string) $placeResult[$k];
+            }
+        }
+        $resp = $placeResult['response'] ?? null;
+        if (is_array($resp)) {
+            foreach (['order_index', 'order_id'] as $k) {
+                if (isset($resp[$k]) && $resp[$k] !== '' && $resp[$k] !== null) {
+                    return is_numeric($resp[$k]) ? (int) $resp[$k] : (string) $resp[$k];
+                }
+            }
+        }
+        $preview = $placeResult['preview'] ?? null;
+        if (is_array($preview) && isset($preview['client_order_index'])) {
+            // client id alone is not enough for cancel; still store if exchange echoes it later
+            return null;
+        }
+
+        return null;
     }
 
     /**
@@ -1280,7 +1614,7 @@ PROMPT;
         $prices = self::levelPrices($side, $entry, $tps, $sls);
         $tp = $prices['tp'][0] ?? ($side === 'long' ? $entry * (1 + $tpPct / 100.0) : $entry * (1 - $tpPct / 100.0));
         $sl = $prices['sl'][0] ?? ($side === 'long' ? $entry * (1 - $slPct / 100.0) : $entry * (1 + $slPct / 100.0));
-        $tpsl = self::placeLevelOrders($prices['tp'], $prices['sl'], $size);
+        $tpsl = self::placeLevelOrders($prices['tp'], $prices['sl'], $size, null, null, [], true);
         $tr = [
             'bar_ts' => $barTs,
             'side' => $side,

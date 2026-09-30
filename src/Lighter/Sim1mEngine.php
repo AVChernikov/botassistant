@@ -553,13 +553,155 @@ PROMPT;
      */
     public static function setLevels(IndicatorConfig $cfg, array $opts, ?int $sessionId = null): array
     {
-        return Sim1mStore::setLevels($cfg->dbPath(), [
+        $db = $cfg->dbPath();
+        $wrap = Sim1mStore::session($db, $sessionId);
+        $sess = $wrap['session'] ?? null;
+
+        $payload = [
             'tp_levels' => $opts['tp_levels'] ?? null,
             'sl_levels' => $opts['sl_levels'] ?? null,
             'lot_usd' => $opts['lot_usd'] ?? null,
             'tp_price' => $opts['tp_price'] ?? null,
             'sl_price' => $opts['sl_price'] ?? null,
-        ], $sessionId);
+        ];
+
+        $inPos = is_array($sess)
+            && ($sess['status'] ?? '') === 'running'
+            && !empty($sess['position_side'])
+            && (float) ($sess['entry_price'] ?? 0) > 0;
+
+        $touchTpsl = array_key_exists('tp_levels', $opts) || array_key_exists('sl_levels', $opts);
+
+        if ($inPos && $touchTpsl) {
+            $side = (string) $sess['position_side'];
+            $entry = (float) $sess['entry_price'];
+            $tmp = $sess;
+            $cfgJson = [];
+            $raw = $sess['config_json'] ?? null;
+            if (is_string($raw) && $raw !== '') {
+                $decoded = json_decode($raw, true);
+                if (is_array($decoded)) {
+                    $cfgJson = $decoded;
+                }
+            } elseif (is_array($raw)) {
+                $cfgJson = $raw;
+            }
+            if (isset($opts['tp_levels'])) {
+                $cfgJson['tp_levels'] = $opts['tp_levels'];
+            }
+            if (isset($opts['sl_levels'])) {
+                $cfgJson['sl_levels'] = $opts['sl_levels'];
+            }
+            $tmp['config_json'] = $cfgJson;
+            [$tpLevels, $slLevels] = self::levelsFromSession($tmp);
+            $prices = self::levelPrices($side, $entry, $tpLevels, $slLevels);
+            $payload['tp_price'] = $prices['tp'][0] ?? null;
+            $payload['sl_price'] = $prices['sl'][0] ?? null;
+            $payload['tp_levels'] = $tpLevels;
+            $payload['sl_levels'] = $slLevels;
+        }
+
+        $out = Sim1mStore::setLevels($db, $payload, $sessionId ?? (is_array($sess) ? (int) $sess['id'] : null));
+        if (!empty($out['ok']) && $inPos && $touchTpsl) {
+            $out['tp_price'] = $payload['tp_price'];
+            $out['sl_price'] = $payload['sl_price'];
+            $out['applied_to_position'] = true;
+        }
+
+        if (!empty($opts['resize_lot']) && !empty($out['ok'])) {
+            $mark = isset($opts['mark_price']) ? (float) $opts['mark_price'] : 0.0;
+            $resized = self::resizeOpenLot($cfg, $sessionId ?? (is_array($sess) ? (int) $sess['id'] : null), $mark);
+            $out['resize'] = $resized;
+            if (!empty($resized['ok'])) {
+                $out['lot_usd'] = $resized['lot_usd'] ?? null;
+                $out['position_size'] = $resized['position_size'] ?? null;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Paper resize open size to lot_usd at mark.
+     *
+     * @return array<string, mixed>
+     */
+    public static function resizeOpenLot(IndicatorConfig $cfg, ?int $sessionId, float $markPrice = 0.0): array
+    {
+        $db = $cfg->dbPath();
+        $wrap = Sim1mStore::session($db, $sessionId);
+        $sess = $wrap['session'] ?? null;
+        if (!is_array($sess) || ($sess['status'] ?? '') !== 'running') {
+            return ['ok' => false, 'error' => 'no running session'];
+        }
+        if (empty($sess['position_side']) || (float) ($sess['entry_price'] ?? 0) <= 0) {
+            return ['ok' => true, 'skipped' => true, 'reason' => 'flat — lot saved for next entry'];
+        }
+        $side = (string) $sess['position_side'];
+        $entry = (float) $sess['entry_price'];
+        $curSize = (float) ($sess['position_size'] ?? 0);
+        $lot = (float) ($sess['lot_usd'] ?? 0);
+        if ($lot <= 0 || $curSize <= 0) {
+            return ['ok' => false, 'error' => 'invalid lot/size'];
+        }
+        $mark = $markPrice > 0 ? $markPrice : $entry;
+        $targetSize = $lot / $mark;
+        $delta = $targetSize - $curSize;
+        $deltaUsd = abs($delta) * $mark;
+        if ($deltaUsd < 1.0) {
+            return [
+                'ok' => true,
+                'skipped' => true,
+                'reason' => 'already near target lot',
+                'lot_usd' => $lot,
+                'position_size' => $curSize,
+            ];
+        }
+        $fees = (float) ($sess['fees'] ?? 0);
+        $realized = (float) ($sess['realized_pnl'] ?? 0);
+        if ($delta > 0) {
+            $fee = $deltaUsd * (self::FEE_BPS / 10000.0);
+            $fees += $fee;
+            $realized -= $fee;
+            $newSize = $curSize + $delta;
+        } else {
+            $closeSize = abs($delta);
+            $dir = $side === 'short' ? -1.0 : 1.0;
+            $pnl = $entry > 0 ? (($mark - $entry) / $entry) * ($closeSize * $entry) * $dir : 0.0;
+            $fee = ($closeSize * $entry) * (self::FEE_BPS / 10000.0);
+            $fees += $fee;
+            $realized += ($pnl - $fee);
+            $newSize = max(0.0, $curSize - $closeSize);
+        }
+        [$tpLevels, $slLevels] = self::levelsFromSession($sess);
+        $prices = self::levelPrices($side, $entry, $tpLevels, $slLevels);
+        $tp = $prices['tp'][0] ?? (isset($sess['tp_price']) ? (float) $sess['tp_price'] : null);
+        $sl = $prices['sl'][0] ?? (isset($sess['sl_price']) ? (float) $sess['sl_price'] : null);
+        Sim1mStore::setPosition($db, [
+            'side' => $side,
+            'size' => $newSize,
+            'entry' => $entry,
+            'tp' => $tp,
+            'sl' => $sl,
+            'reason' => sprintf('resize lot → $%s @ mark %.4f', (string) (int) $lot, $mark),
+        ], (int) $sess['id']);
+        Sim1mStore::setLevels($db, [
+            'lot_usd' => $lot,
+            'tp_levels' => $tpLevels,
+            'sl_levels' => $slLevels,
+            'tp_price' => $tp,
+            'sl_price' => $sl,
+        ], (int) $sess['id']);
+
+        return [
+            'ok' => true,
+            'lot_usd' => $lot,
+            'position_size' => $newSize,
+            'delta_usd' => round($delta > 0 ? $deltaUsd : -$deltaUsd, 4),
+            'mark' => $mark,
+            'fees' => round($fees, 4),
+            'realized_pnl' => round($realized, 4),
+        ];
     }
 
     /**

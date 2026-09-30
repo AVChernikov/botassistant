@@ -84,6 +84,17 @@ async def _run(op: str, args: argparse.Namespace) -> dict:
             )
             return _loads(raw)
 
+        if op == "orders":
+            raw = await srv.get_active_orders(market_id=mid)
+            return _loads(raw)
+
+        if op == "cancel":
+            raw = await srv.cancel_order(
+                order_index=int(args.order_index),
+                market_id=mid,
+            )
+            return _loads(raw)
+
         if op == "positions":
             raw = await srv.get_positions(active_only=True)
             return _loads(raw)
@@ -97,13 +108,24 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "op",
-        choices=["open_long", "open_short", "close", "place_tp_sl", "place_tp", "place_sl", "positions"],
+        choices=[
+            "open_long",
+            "open_short",
+            "close",
+            "place_tp_sl",
+            "place_tp",
+            "place_sl",
+            "orders",
+            "cancel",
+            "positions",
+        ],
     )
     ap.add_argument("--market-id", type=int, default=120)
     ap.add_argument("--quote-usd", type=float, default=None)
     ap.add_argument("--size", type=float, default=None)
     ap.add_argument("--tp", type=float, default=None)
     ap.add_argument("--sl", type=float, default=None)
+    ap.add_argument("--order-index", type=int, default=None)
     ap.add_argument("--dry-run", action="store_true")
     ns = ap.parse_args()
     try:

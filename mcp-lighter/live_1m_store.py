@@ -321,6 +321,7 @@ def set_levels(
     tp_price: float | None = None,
     sl_price: float | None = None,
     lot_usd: float | None = None,
+    tpsl_order_ids: list | None = None,
 ) -> dict:
     """Persist selected TP/SL % levels + optional lot into config_json + primary tp_pct/sl_pct."""
     con = connect(db_path)
@@ -353,6 +354,13 @@ def set_levels(
         sls = _normalize_pct_list(sl_levels if sl_levels is not None else cfg.get("sl_levels"), [30.0])
         cfg["tp_levels"] = tps
         cfg["sl_levels"] = sls
+        if tpsl_order_ids is not None:
+            ids = []
+            for x in tpsl_order_ids if isinstance(tpsl_order_ids, (list, tuple)) else []:
+                if x is None or x == "":
+                    continue
+                ids.append(int(x) if str(x).isdigit() else x)
+            cfg["tpsl_order_ids"] = ids
         tp_pct = float(min(tps))
         sl_pct = float(min(sls))
         allowed_lots = [50, 100, 150, 200, 250, 300, 350, 400]
@@ -472,6 +480,9 @@ def set_position(
     tp: float | None = None,
     sl: float | None = None,
     reason: str = "adopt",
+    fees: float | None = None,
+    realized_pnl: float | None = None,
+    lot_usd: float | None = None,
 ) -> dict:
     con = connect(db_path)
     try:
@@ -507,24 +518,28 @@ def set_position(
             con.execute(
                 """
                 UPDATE live_1m_sessions SET
-                    position_side=?, position_size=?, entry_price=?, entry_ts=?,
-                    tp_price=?, sl_price=?, last_action=?, last_reason=?, updated_at=?
+                    position_side=?, position_size=?, entry_price=?,
+                    tp_price=?, sl_price=?, last_action=?, last_reason=?, updated_at=?,
+                    fees=COALESCE(?, fees), realized_pnl=COALESCE(?, realized_pnl),
+                    lot_usd=COALESCE(?, lot_usd)
                 WHERE id=?
                 """,
                 (
                     side_n,
                     float(size or 0),
                     float(entry or 0),
-                    now * 1000,
                     tp,
                     sl,
-                    "adopt",
+                    "resize" if "resize" in str(reason) else "adopt",
                     reason,
                     now,
+                    fees,
+                    realized_pnl,
+                    lot_usd,
                     sid,
                 ),
             )
-            msg = f"в сессию включена {side_n} @ {entry} ({reason})"
+            msg = f"позиция {side_n} size={size} ({reason})"
         con.execute(
             "INSERT INTO live_1m_logs (session_id, created_at, level, message) VALUES (?, ?, 'info', ?)",
             (sid, now, msg),
@@ -595,6 +610,7 @@ def main() -> int:
                         payload.get("tp_price"),
                         payload.get("sl_price"),
                         payload.get("lot_usd"),
+                        payload.get("tpsl_order_ids"),
                     ),
                     ensure_ascii=True,
                 )
@@ -615,6 +631,9 @@ def main() -> int:
                         payload.get("tp"),
                         payload.get("sl"),
                         str(payload.get("reason") or "adopt"),
+                        payload.get("fees"),
+                        payload.get("realized_pnl"),
+                        payload.get("lot_usd"),
                     ),
                     ensure_ascii=True,
                 )
