@@ -73,6 +73,14 @@
       const vol = Number(c.v ?? c.V ?? 0);
       if (Number.isFinite(vol)) maxVol = Math.max(maxVol, vol);
     }
+    const levels = Array.isArray(options.levels) ? options.levels : [];
+    for (const lv of levels) {
+      const p = Number(lv && (lv.price ?? lv));
+      if (Number.isFinite(p)) {
+        min = Math.min(min, p);
+        max = Math.max(max, p);
+      }
+    }
     const padY = (max - min) * 0.06 || max * 0.001 || 1;
     min -= padY;
     max += padY;
@@ -135,6 +143,30 @@
         ctx.globalAlpha = 1;
       }
     });
+
+    // Horizontal levels (e.g. SL dashed red)
+    for (const lv of levels) {
+      const p = Number(lv && (lv.price ?? lv));
+      if (!Number.isFinite(p)) continue;
+      const y = yScale(p);
+      ctx.save();
+      ctx.strokeStyle = (lv && lv.color) || '#b42318';
+      ctx.lineWidth = (lv && lv.width) || 1.4;
+      ctx.setLineDash(Array.isArray(lv && lv.dash) ? lv.dash : [6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(cssW - pad.right, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const label = (lv && lv.label) || '';
+      if (label) {
+        ctx.fillStyle = (lv && lv.color) || '#b42318';
+        ctx.font = '11px "IBM Plex Mono", monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(label + ' ' + fmtPrice(p, 4), cssW - pad.right + 6, y - 3);
+      }
+      ctx.restore();
+    }
 
     // Volume axis label
     ctx.fillStyle = '#5c6b61';

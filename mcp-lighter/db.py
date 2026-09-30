@@ -143,6 +143,180 @@ CREATE TABLE IF NOT EXISTS tg_messages (
     KEY idx_tg_messages_created (created_at),
     KEY idx_tg_messages_chat (chat_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS sim_1m_sessions (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    market_id INT NOT NULL DEFAULT 120,
+    symbol VARCHAR(64) NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'running',
+    mode VARCHAR(16) NOT NULL DEFAULT 'emulation',
+    resolution VARCHAR(8) NOT NULL DEFAULT '1m',
+    method VARCHAR(64) NOT NULL DEFAULT 'ROC(10) zero-cross',
+    lot_usd DOUBLE NOT NULL DEFAULT 200,
+    tick_sec INT NOT NULL DEFAULT 30,
+    tp_pct DOUBLE NOT NULL DEFAULT 50,
+    sl_pct DOUBLE NOT NULL DEFAULT 30,
+    kill_lo DOUBLE NOT NULL DEFAULT -50,
+    kill_hi DOUBLE NOT NULL DEFAULT 100,
+    session_pnl DOUBLE NOT NULL DEFAULT 0,
+    realized_pnl DOUBLE NOT NULL DEFAULT 0,
+    fees DOUBLE NOT NULL DEFAULT 0,
+    position_side VARCHAR(8) NULL,
+    position_size DOUBLE NULL,
+    entry_price DOUBLE NULL,
+    entry_ts BIGINT NULL,
+    tp_price DOUBLE NULL,
+    sl_price DOUBLE NULL,
+    ticks_count INT NOT NULL DEFAULT 0,
+    trades_count INT NOT NULL DEFAULT 0,
+    last_tick_at BIGINT NULL,
+    last_bar_ts BIGINT NULL,
+    last_action VARCHAR(32) NULL,
+    last_reason VARCHAR(255) NULL,
+    config_json TEXT NULL,
+    started_at BIGINT NOT NULL,
+    stopped_at BIGINT NULL,
+    updated_at BIGINT NOT NULL,
+    KEY idx_sim1m_sess_status (status, id),
+    KEY idx_sim1m_sess_started (started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS sim_1m_ticks (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    session_id BIGINT NOT NULL,
+    created_at BIGINT NOT NULL,
+    bar_ts BIGINT NULL,
+    price DOUBLE NULL,
+    bid DOUBLE NULL,
+    ask DOUBLE NULL,
+    spread_bps DOUBLE NULL,
+    method VARCHAR(64) NULL,
+    resolution VARCHAR(8) NULL,
+    roc_sig INT NULL,
+    sma_sig INT NULL,
+    method_sig INT NULL,
+    action VARCHAR(32) NULL,
+    reason VARCHAR(255) NULL,
+    position_side VARCHAR(8) NULL,
+    u_pnl DOUBLE NULL,
+    session_pnl DOUBLE NULL,
+    payload_json MEDIUMTEXT NULL,
+    KEY idx_sim1m_ticks_sess (session_id, id),
+    KEY idx_sim1m_ticks_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS sim_1m_trades (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    session_id BIGINT NOT NULL,
+    created_at BIGINT NOT NULL,
+    bar_ts BIGINT NULL,
+    side VARCHAR(8) NULL,
+    action VARCHAR(16) NOT NULL,
+    price DOUBLE NULL,
+    size DOUBLE NULL,
+    quote_usd DOUBLE NULL,
+    pnl DOUBLE NULL,
+    fees DOUBLE NULL,
+    reason VARCHAR(255) NULL,
+    KEY idx_sim1m_trades_sess (session_id, id),
+    KEY idx_sim1m_trades_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS sim_1m_logs (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    session_id BIGINT NOT NULL,
+    created_at BIGINT NOT NULL,
+    level VARCHAR(16) NOT NULL DEFAULT 'info',
+    message TEXT NOT NULL,
+    KEY idx_sim1m_logs_sess (session_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS live_1m_sessions (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    market_id INT NOT NULL DEFAULT 120,
+    symbol VARCHAR(64) NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'running',
+    mode VARCHAR(16) NOT NULL DEFAULT 'live',
+    resolution VARCHAR(8) NOT NULL DEFAULT '1m',
+    method VARCHAR(64) NOT NULL DEFAULT 'ROC(10) zero-cross',
+    lot_usd DOUBLE NOT NULL DEFAULT 200,
+    tick_sec INT NOT NULL DEFAULT 30,
+    tp_pct DOUBLE NOT NULL DEFAULT 50,
+    sl_pct DOUBLE NOT NULL DEFAULT 20,
+    kill_lo DOUBLE NOT NULL DEFAULT -50,
+    kill_hi DOUBLE NOT NULL DEFAULT 100,
+    session_pnl DOUBLE NOT NULL DEFAULT 0,
+    realized_pnl DOUBLE NOT NULL DEFAULT 0,
+    fees DOUBLE NOT NULL DEFAULT 0,
+    position_side VARCHAR(8) NULL,
+    position_size DOUBLE NULL,
+    entry_price DOUBLE NULL,
+    entry_ts BIGINT NULL,
+    tp_price DOUBLE NULL,
+    sl_price DOUBLE NULL,
+    ticks_count INT NOT NULL DEFAULT 0,
+    trades_count INT NOT NULL DEFAULT 0,
+    last_tick_at BIGINT NULL,
+    last_bar_ts BIGINT NULL,
+    last_action VARCHAR(32) NULL,
+    last_reason VARCHAR(255) NULL,
+    config_json TEXT NULL,
+    started_at BIGINT NOT NULL,
+    stopped_at BIGINT NULL,
+    updated_at BIGINT NOT NULL,
+    KEY idx_live1m_sess_status (status, id),
+    KEY idx_live1m_sess_started (started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS live_1m_ticks (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    session_id BIGINT NOT NULL,
+    created_at BIGINT NOT NULL,
+    bar_ts BIGINT NULL,
+    price DOUBLE NULL,
+    bid DOUBLE NULL,
+    ask DOUBLE NULL,
+    spread_bps DOUBLE NULL,
+    method VARCHAR(64) NULL,
+    resolution VARCHAR(8) NULL,
+    roc_sig INT NULL,
+    sma_sig INT NULL,
+    method_sig INT NULL,
+    action VARCHAR(32) NULL,
+    reason VARCHAR(255) NULL,
+    position_side VARCHAR(8) NULL,
+    u_pnl DOUBLE NULL,
+    session_pnl DOUBLE NULL,
+    payload_json MEDIUMTEXT NULL,
+    KEY idx_live1m_ticks_sess (session_id, id),
+    KEY idx_live1m_ticks_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS live_1m_trades (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    session_id BIGINT NOT NULL,
+    created_at BIGINT NOT NULL,
+    bar_ts BIGINT NULL,
+    side VARCHAR(8) NULL,
+    action VARCHAR(16) NOT NULL,
+    price DOUBLE NULL,
+    size DOUBLE NULL,
+    quote_usd DOUBLE NULL,
+    pnl DOUBLE NULL,
+    fees DOUBLE NULL,
+    reason VARCHAR(255) NULL,
+    KEY idx_live1m_trades_sess (session_id, id),
+    KEY idx_live1m_trades_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS live_1m_logs (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    session_id BIGINT NOT NULL,
+    created_at BIGINT NOT NULL,
+    level VARCHAR(16) NOT NULL DEFAULT 'info',
+    message TEXT NOT NULL,
+    KEY idx_live1m_logs_sess (session_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
 _SIGNAL_RE = re.compile(r"(?<![`\w])signal(?![`\w])", re.IGNORECASE)

@@ -209,6 +209,8 @@ declare(strict_types=1);
       <div class="nav">
         <a href="vol-accuracy-report.php?market_id=120">vol × точность</a>
         <span style="color:var(--muted);margin:0 .35rem">·</span>
+        <a href="sim-1m.php">эмуляция 1m</a>
+        <span style="color:var(--muted);margin:0 .35rem">·</span>
         <a href="btc.php">BTC #1</a>
         ·
         <a href="index.php">общая</a>

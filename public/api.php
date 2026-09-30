@@ -20,6 +20,8 @@ use Lighter\IndicatorConfig;
 use Lighter\IndicatorHistoryStore;
 use Lighter\IndicatorReportStore;
 use Lighter\IndicatorTick;
+use Lighter\Sim1mEngine;
+use Lighter\Live1mEngine;
 use Lighter\TechnicalAnalysis;
 
 function jsonOut(array $payload, int $status = 200): never
@@ -538,10 +540,176 @@ try {
             @file_put_contents($cachePath, json_encode($out, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
             jsonOut($out);
 
+        case 'sim_1m_start':
+            $cfg = IndicatorConfig::load();
+            $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
+            $opts = [
+                'market_id' => (int) ($_GET['market_id'] ?? $_POST['market_id'] ?? 120),
+                'lot_usd' => (float) ($_GET['lot_usd'] ?? $_POST['lot_usd'] ?? 200),
+                'tick_sec' => (int) ($_GET['tick_sec'] ?? $_POST['tick_sec'] ?? 30),
+                'method' => (string) ($_GET['method'] ?? $_POST['method'] ?? 'ROC(10) zero-cross'),
+                'tp_levels' => json_decode((string) ($_GET['tp_levels'] ?? $_POST['tp_levels'] ?? '[50]'), true) ?: [50],
+                'sl_levels' => json_decode((string) ($_GET['sl_levels'] ?? $_POST['sl_levels'] ?? '[30]'), true) ?: [30],
+            ];
+            jsonOut(Sim1mEngine::start($simClient, $cfg, $opts));
+
+        case 'sim_1m_stop':
+            $cfg = IndicatorConfig::load();
+            $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            jsonOut(Sim1mEngine::stop($simClient, $cfg, $sid === false ? null : $sid));
+
+        case 'sim_1m_resume':
+            $cfg = IndicatorConfig::load();
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            jsonOut(Sim1mEngine::resume($cfg, $sid === false ? null : $sid));
+
+        case 'sim_1m_candidates':
+            $cfg = IndicatorConfig::load();
+            $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            jsonOut(Sim1mEngine::candidatePositions($simClient, $cfg, $sid === false ? null : $sid));
+
+        case 'sim_1m_adopt':
+            $cfg = IndicatorConfig::load();
+            $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            $raw = $_GET['selected'] ?? $_POST['selected'] ?? '[]';
+            if (is_string($raw)) {
+                $decoded = json_decode($raw, true);
+                $selected = is_array($decoded) ? $decoded : array_filter(array_map('trim', explode(',', $raw)));
+            } elseif (is_array($raw)) {
+                $selected = $raw;
+            } else {
+                $selected = [];
+            }
+            jsonOut(Sim1mEngine::adoptPositions(
+                $simClient,
+                $cfg,
+                $selected,
+                $sid === false ? null : $sid,
+            ));
+
+        case 'sim_1m_tick':
+            $cfg = IndicatorConfig::load();
+            $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            jsonOut(Sim1mEngine::tick($simClient, $cfg, $sid === false ? null : $sid));
+
+        case 'sim_1m_status':
+            $cfg = IndicatorConfig::load();
+            $sid = filter_var($_GET['session_id'] ?? null, FILTER_VALIDATE_INT);
+            jsonOut(Sim1mEngine::status($cfg, $sid === false ? null : $sid));
+
+        case 'sim_1m_set_method':
+            $cfg = IndicatorConfig::load();
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            $method = (string) ($_GET['method'] ?? $_POST['method'] ?? '');
+            $out = Sim1mEngine::setMethod($cfg, $method, $sid === false ? null : $sid);
+            jsonOut($out, !empty($out['ok']) ? 200 : 400);
+
+        case 'sim_1m_set_levels':
+            $cfg = IndicatorConfig::load();
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            $tpRaw = $_GET['tp_levels'] ?? $_POST['tp_levels'] ?? null;
+            $slRaw = $_GET['sl_levels'] ?? $_POST['sl_levels'] ?? null;
+            $opts = [
+                'tp_levels' => is_string($tpRaw) ? (json_decode($tpRaw, true) ?: null) : $tpRaw,
+                'sl_levels' => is_string($slRaw) ? (json_decode($slRaw, true) ?: null) : $slRaw,
+                'lot_usd' => isset($_GET['lot_usd']) || isset($_POST['lot_usd'])
+                    ? (float) ($_GET['lot_usd'] ?? $_POST['lot_usd'])
+                    : null,
+            ];
+            $out = Sim1mEngine::setLevels($cfg, $opts, $sid === false ? null : $sid);
+            jsonOut($out, !empty($out['ok']) ? 200 : 400);
+
+        case 'live_1m_start':
+            $cfg = IndicatorConfig::load();
+            $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
+            $opts = [
+                'market_id' => (int) ($_GET['market_id'] ?? $_POST['market_id'] ?? 120),
+                'lot_usd' => (float) ($_GET['lot_usd'] ?? $_POST['lot_usd'] ?? 200),
+                'tick_sec' => (int) ($_GET['tick_sec'] ?? $_POST['tick_sec'] ?? 30),
+                'method' => (string) ($_GET['method'] ?? $_POST['method'] ?? 'ROC(10) zero-cross'),
+                'tp_levels' => json_decode((string) ($_GET['tp_levels'] ?? $_POST['tp_levels'] ?? '[50]'), true) ?: [50],
+                'sl_levels' => json_decode((string) ($_GET['sl_levels'] ?? $_POST['sl_levels'] ?? '[30]'), true) ?: [30],
+            ];
+            jsonOut(Live1mEngine::start($simClient, $cfg, $opts));
+
+        case 'live_1m_stop':
+            $cfg = IndicatorConfig::load();
+            $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            jsonOut(Live1mEngine::stop($simClient, $cfg, $sid === false ? null : $sid));
+
+        case 'live_1m_resume':
+            $cfg = IndicatorConfig::load();
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            jsonOut(Live1mEngine::resume($cfg, $sid === false ? null : $sid));
+
+        case 'live_1m_candidates':
+            $cfg = IndicatorConfig::load();
+            $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            jsonOut(Live1mEngine::candidatePositions($simClient, $cfg, $sid === false ? null : $sid));
+
+        case 'live_1m_adopt':
+            $cfg = IndicatorConfig::load();
+            $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            $raw = $_GET['selected'] ?? $_POST['selected'] ?? '[]';
+            if (is_string($raw)) {
+                $decoded = json_decode($raw, true);
+                $selected = is_array($decoded) ? $decoded : array_filter(array_map('trim', explode(',', $raw)));
+            } elseif (is_array($raw)) {
+                $selected = $raw;
+            } else {
+                $selected = [];
+            }
+            jsonOut(Live1mEngine::adoptPositions(
+                $simClient,
+                $cfg,
+                $selected,
+                $sid === false ? null : $sid,
+            ));
+
+        case 'live_1m_tick':
+            $cfg = IndicatorConfig::load();
+            $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            jsonOut(Live1mEngine::tick($simClient, $cfg, $sid === false ? null : $sid));
+
+        case 'live_1m_status':
+            $cfg = IndicatorConfig::load();
+            $sid = filter_var($_GET['session_id'] ?? null, FILTER_VALIDATE_INT);
+            jsonOut(Live1mEngine::status($cfg, $sid === false ? null : $sid));
+
+        case 'live_1m_set_method':
+            $cfg = IndicatorConfig::load();
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            $method = (string) ($_GET['method'] ?? $_POST['method'] ?? '');
+            $out = Live1mEngine::setMethod($cfg, $method, $sid === false ? null : $sid);
+            jsonOut($out, !empty($out['ok']) ? 200 : 400);
+
+        case 'live_1m_set_levels':
+            $cfg = IndicatorConfig::load();
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            $tpRaw = $_GET['tp_levels'] ?? $_POST['tp_levels'] ?? null;
+            $slRaw = $_GET['sl_levels'] ?? $_POST['sl_levels'] ?? null;
+            $opts = [
+                'tp_levels' => is_string($tpRaw) ? (json_decode($tpRaw, true) ?: null) : $tpRaw,
+                'sl_levels' => is_string($slRaw) ? (json_decode($slRaw, true) ?: null) : $slRaw,
+                'lot_usd' => isset($_GET['lot_usd']) || isset($_POST['lot_usd'])
+                    ? (float) ($_GET['lot_usd'] ?? $_POST['lot_usd'])
+                    : null,
+            ];
+            $out = Live1mEngine::setLevels($cfg, $opts, $sid === false ? null : $sid);
+            jsonOut($out, !empty($out['ok']) ? 200 : 400);
+
         default:
             jsonOut([
                 'ok' => false,
-                'error' => 'Unknown action. Use markets|market|btc_analyze|market_analyze|live|indicators_tick|indicators_history|indicators_config|indicators_compact|indicators_analyze|indicators_report|indicators_pipeline|deepseek_queries|trading_status|vol_accuracy_report',
+                'error' => 'Unknown action. Use …|sim_1m_*|live_1m_start|live_1m_stop|live_1m_resume|live_1m_candidates|live_1m_adopt|live_1m_tick|live_1m_status|live_1m_set_method|live_1m_set_levels|sim_1m_set_levels',
             ], 400);
     }
 } catch (ApiException $e) {
