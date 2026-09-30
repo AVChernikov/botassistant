@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Replace-snapshot / read indicator history (MySQL via db.py)."""
+"""Append/upsert candles + indicator history (MySQL via db.py).
+
+Default mode=append: INSERT … ON DUPLICATE KEY UPDATE (no full delete).
+Legacy mode=replace: DELETE per replace_scopes, then insert.
+"""
 from __future__ import annotations
 
 import argparse
@@ -11,40 +15,158 @@ from pathlib import Path
 from db import connect
 
 
+def watermarks(db_path: str) -> dict:
+    """Per market+resolution: max bar_ts for candles and snapshots separately."""
+    con = connect(db_path)
+    try:
+        candle_wm: dict[tuple[int, str], dict] = {}
+        try:
+            cur = con.execute(
+                """
+                SELECT market_id, resolution, MAX(bar_ts) AS max_bar_ts, COUNT(*) AS row_count
+                FROM indicator_candles
+                GROUP BY market_id, resolution
+                """
+            )
+            for r in cur.fetchall():
+                d = dict(r)
+                candle_wm[(int(d["market_id"]), str(d["resolution"]))] = d
+        except Exception:  # noqa: BLE001
+            pass
+
+        snap_wm: dict[tuple[int, str], dict] = {}
+        cur2 = con.execute(
+            """
+            SELECT market_id, resolution, MAX(bar_ts) AS max_bar_ts, COUNT(*) AS row_count
+            FROM indicator_snapshots
+            GROUP BY market_id, resolution
+            """
+        )
+        for r in cur2.fetchall():
+            d = dict(r)
+            snap_wm[(int(d["market_id"]), str(d["resolution"]))] = d
+
+        keys = set(candle_wm) | set(snap_wm)
+        rows = []
+        for key in sorted(keys):
+            c = candle_wm.get(key)
+            s = snap_wm.get(key)
+            rows.append(
+                {
+                    "market_id": key[0],
+                    "resolution": key[1],
+                    "max_candle_ts": int(c["max_bar_ts"]) if c and c.get("max_bar_ts") else None,
+                    "max_snap_ts": int(s["max_bar_ts"]) if s and s.get("max_bar_ts") else None,
+                    # legacy field for older PHP: prefer candle, else snap
+                    "max_bar_ts": int(
+                        (c["max_bar_ts"] if c and c.get("max_bar_ts") else None)
+                        or (s["max_bar_ts"] if s and s.get("max_bar_ts") else 0)
+                        or 0
+                    ),
+                    "candle_rows": int((c or {}).get("row_count") or 0),
+                    "snap_rows": int((s or {}).get("row_count") or 0),
+                }
+            )
+        return {"ok": True, "watermarks": rows}
+    finally:
+        con.close()
+
+
 def write_payload(path: str) -> dict:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     db_path = data["db_path"]
+    candles = data.get("candles") or []
     rows = data.get("rows") or []
     stats = data.get("stats") or []
     replace_scopes = data.get("replace_scopes") or []
+    mode = str(data.get("mode") or "append").strip().lower()
+    if mode not in ("append", "replace", "upsert"):
+        mode = "append"
+    if mode == "upsert":
+        mode = "append"
+
     now = int(time.time())
     con = connect(db_path)
     deleted = 0
     deleted_stats = 0
+    deleted_candles = 0
     inserted = 0
+    updated = 0
+    inserted_candles = 0
+    updated_candles = 0
     inserted_stats = 0
     try:
-        for scope in replace_scopes:
-            mid = int(scope["market_id"])
-            res = str(scope["resolution"])
-            cur = con.execute(
-                "DELETE FROM indicator_snapshots WHERE market_id=? AND resolution=?",
-                (mid, res),
-            )
-            deleted += cur.rowcount if cur.rowcount is not None else 0
-            cur2 = con.execute(
-                "DELETE FROM indicator_stats WHERE market_id=? AND resolution=?",
-                (mid, res),
-            )
-            deleted_stats += cur2.rowcount if cur2.rowcount is not None else 0
+        if mode == "replace":
+            for scope in replace_scopes:
+                mid = int(scope["market_id"])
+                res = str(scope["resolution"])
+                cur = con.execute(
+                    "DELETE FROM indicator_snapshots WHERE market_id=? AND resolution=?",
+                    (mid, res),
+                )
+                deleted += cur.rowcount if cur.rowcount is not None else 0
+                cur2 = con.execute(
+                    "DELETE FROM indicator_stats WHERE market_id=? AND resolution=?",
+                    (mid, res),
+                )
+                deleted_stats += cur2.rowcount if cur2.rowcount is not None else 0
+                cur3 = con.execute(
+                    "DELETE FROM indicator_candles WHERE market_id=? AND resolution=?",
+                    (mid, res),
+                )
+                deleted_candles += cur3.rowcount if cur3.rowcount is not None else 0
 
+        candle_sql = """
+            INSERT INTO indicator_candles
+                (market_id, symbol, resolution, bar_ts, open, high, low, close, volume, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+                symbol=VALUES(symbol),
+                open=VALUES(open),
+                high=VALUES(high),
+                low=VALUES(low),
+                close=VALUES(close),
+                volume=VALUES(volume),
+                created_at=VALUES(created_at)
+        """
+        for c in candles:
+            cur = con.execute(
+                candle_sql,
+                (
+                    int(c["market_id"]),
+                    c.get("symbol"),
+                    str(c["resolution"]),
+                    int(c["bar_ts"]),
+                    c.get("open"),
+                    c.get("high"),
+                    c.get("low"),
+                    c.get("close"),
+                    c.get("volume"),
+                    now,
+                ),
+            )
+            rc = cur.rowcount if cur.rowcount is not None else 0
+            if rc == 1:
+                inserted_candles += 1
+            elif rc >= 2:
+                updated_candles += 1
+            else:
+                inserted_candles += 1
+
+        snap_sql = """
+            INSERT INTO indicator_snapshots
+                (market_id, symbol, resolution, bar_ts, indicator, value, signal, close, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+                symbol=VALUES(symbol),
+                value=VALUES(value),
+                signal=VALUES(signal),
+                close=VALUES(close),
+                created_at=VALUES(created_at)
+        """
         for r in rows:
-            con.execute(
-                """
-                INSERT INTO indicator_snapshots
-                    (market_id, symbol, resolution, bar_ts, indicator, value, signal, close, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+            cur = con.execute(
+                snap_sql,
                 (
                     int(r["market_id"]),
                     r.get("symbol"),
@@ -57,17 +179,36 @@ def write_payload(path: str) -> dict:
                     now,
                 ),
             )
-            inserted += 1
+            rc = cur.rowcount if cur.rowcount is not None else 0
+            if rc == 1:
+                inserted += 1
+            elif rc >= 2:
+                updated += 1
+            else:
+                inserted += 1
 
+        stats_sql = """
+            INSERT INTO indicator_stats
+                (market_id, symbol, resolution, indicator, bar_ts,
+                 strategy_return_pct, profit_factor, accuracy,
+                 signals, wins, losses, last_signal, last_value, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+                symbol=VALUES(symbol),
+                bar_ts=VALUES(bar_ts),
+                strategy_return_pct=VALUES(strategy_return_pct),
+                profit_factor=VALUES(profit_factor),
+                accuracy=VALUES(accuracy),
+                signals=VALUES(signals),
+                wins=VALUES(wins),
+                losses=VALUES(losses),
+                last_signal=VALUES(last_signal),
+                last_value=VALUES(last_value),
+                created_at=VALUES(created_at)
+        """
         for s in stats:
             con.execute(
-                """
-                INSERT INTO indicator_stats
-                    (market_id, symbol, resolution, indicator, bar_ts,
-                     strategy_return_pct, profit_factor, accuracy,
-                     signals, wins, losses, last_signal, last_value, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                stats_sql,
                 (
                     int(s["market_id"]),
                     s.get("symbol"),
@@ -92,12 +233,20 @@ def write_payload(path: str) -> dict:
         con.close()
     return {
         "ok": True,
+        "mode": mode,
         "inserted": inserted,
+        "updated": updated,
+        "inserted_candles": inserted_candles,
+        "updated_candles": updated_candles,
         "deleted": deleted,
+        "deleted_candles": deleted_candles,
         "inserted_stats": inserted_stats,
         "deleted_stats": deleted_stats,
         "db_path": db_path,
         "scopes": len(replace_scopes),
+        "candles_in": len(candles),
+        "rows_in": len(rows),
+        "stats_in": len(stats),
     }
 
 
@@ -144,6 +293,14 @@ def read_rows(db_path: str, limit: int, market_id: int | None, resolution: str |
 
 
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == "--watermarks":
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--watermarks", action="store_true")
+        ap.add_argument("db_path")
+        ns = ap.parse_args()
+        print(json.dumps(watermarks(ns.db_path), ensure_ascii=False))
+        return 0
+
     if len(sys.argv) >= 2 and sys.argv[1] == "--read":
         ap = argparse.ArgumentParser()
         ap.add_argument("--read", action="store_true")

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -830,20 +831,37 @@ async def run_agent(*, dry_run: bool = False, max_rounds: int = 4) -> dict[str, 
     return out
 
 
+def _safe_print(s: str) -> None:
+    """Windows consoles are often cp1251; never crash the tick on Unicode arrows."""
+    try:
+        print(s)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        sys.stdout.buffer.write((s + "\n").encode(enc, errors="replace"))
+        sys.stdout.buffer.flush()
+
+
 def main() -> int:
+    # Subprocess under telegram_bot / schtask: force UTF-8 so → / Cyrillic don't abort exit 0.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ns = ap.parse_args()
     try:
         result = asyncio.run(run_agent(dry_run=ns.dry_run))
-        print(json.dumps({k: result[k] for k in result if k != "final_text"}, ensure_ascii=False))
+        dump = {k: result[k] for k in result if k != "final_text"}
+        _safe_print(json.dumps(dump, ensure_ascii=False))
         if result.get("final_text"):
-            print("FINAL:", result["final_text"][:300])
+            _safe_print("FINAL: " + str(result["final_text"])[:300])
         return 0
     except Exception as e:  # noqa: BLE001
         err = {"ok": False, "error": str(e)[:400], "ts": int(time.time())}
         OUT.write_text(json.dumps(err, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        print(json.dumps(err, ensure_ascii=False))
+        _safe_print(json.dumps(err, ensure_ascii=False))
         return 1
 
 

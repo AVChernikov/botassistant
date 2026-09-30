@@ -21,14 +21,13 @@ Packed by `mcp-lighter/agent_checkpoint.py`:
 - rotate timer → `_agent_rotate_state.json`
 
 Autosave: every ~10m from `agent_tick_brief.py` (`reason=auto`). Keep last ~80 rows.
+**No** auto TG «heavy chat» nudge (disabled — Cursor is observer; DeepSeek trades via schtask).
 
 ## Telegram (instant, no agent queue)
 
 Commands (live in `telegram_bot.py`):
 
-- `rotate` / `новый чат` / `checkpoint` / `обрезать` → save + TG bootstrap text
-
-Auto heavy nudge: schtask brief runs `maybe_heavy_notify` — if **>90m** since last load/rotate (cooldown 30m) → save + TG with paste commands. Does **not** open IDE chat.
+- `rotate` / `новый чат` / `checkpoint` / `обрезать` → save + TG bootstrap text (manual only)
 
 ## When to rotate (cut context)
 
@@ -42,11 +41,10 @@ Commands (cwd `mcp-lighter`):
 
 ```bash
 .\.venv\Scripts\python.exe agent_checkpoint.py rotate --source agent
-.\.venv\Scripts\python.exe agent_checkpoint.py heavy-check --force
 .\.venv\Scripts\python.exe agent_checkpoint.py handoff --latest
 ```
 
-If chat feels heavy: run `heavy-check --force` (or `rotate`) — user gets TG; tell them to open a **new** Cursor chat.
+If chat feels heavy: run `rotate` (or TG `rotate`) — optional; trading does not need Cursor `/loop`.
 
 ## New chat bootstrap
 

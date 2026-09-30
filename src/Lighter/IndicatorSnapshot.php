@@ -6,7 +6,7 @@ namespace Lighter;
 
 /**
  * Full-window indicator snapshot: one row per candle × indicator.
- * Cron replaces previous snapshot for each market+resolution.
+ * Used for warmup compute; persistence appends/upserts via IndicatorTick.
  */
 final class IndicatorSnapshot
 {

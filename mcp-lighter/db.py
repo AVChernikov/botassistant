@@ -30,6 +30,22 @@ CREATE TABLE IF NOT EXISTS indicator_snapshots (
     KEY idx_ind_snap_lookup (market_id, resolution, indicator, bar_ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS indicator_candles (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    market_id INT NOT NULL,
+    symbol VARCHAR(64) NULL,
+    resolution VARCHAR(16) NOT NULL,
+    bar_ts BIGINT NOT NULL,
+    open DOUBLE NULL,
+    high DOUBLE NULL,
+    low DOUBLE NULL,
+    close DOUBLE NULL,
+    volume DOUBLE NULL,
+    created_at BIGINT NOT NULL,
+    UNIQUE KEY uq_ind_candle (market_id, resolution, bar_ts),
+    KEY idx_ind_candle_lookup (market_id, resolution, bar_ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS indicator_stats (
     id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
     market_id INT NOT NULL,

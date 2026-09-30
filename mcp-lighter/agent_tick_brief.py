@@ -506,16 +506,10 @@ def main() -> int:
         brief = build_brief()
         OUT.write_text(json.dumps(brief, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         ck = None
-        heavy = None
-        pro = None
         try:
             import agent_checkpoint as ac
 
             ck = ac.maybe_autosave()
-            try:
-                heavy = ac.maybe_heavy_notify()
-            except Exception as e:
-                heavy = {"ok": False, "error": str(e)[:160]}
         except Exception as e:
             ck = {"ok": False, "error": str(e)[:160]}
 
@@ -530,7 +524,6 @@ def main() -> int:
                     "line": brief.get("line"),
                     "attention": (brief.get("decision_hint") or {}).get("attention"),
                     "checkpoint": ck,
-                    "heavy": heavy,
                     "trader": "deepseek_trader_agent",
                 },
                 ensure_ascii=False,

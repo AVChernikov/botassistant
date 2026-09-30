@@ -10,6 +10,7 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -181,7 +182,32 @@ async def handle_update(update: dict[str, Any]) -> None:
         try:
             await _run_trader_now()
         except Exception as exc:  # noqa: BLE001
-            send_message(f"DeepSeek tick error: {exc}")
+            send_message(f"DeepSeek tick error: {_scrub_secrets(str(exc))}")
+
+
+_BOT_TOKEN_RE = re.compile(r"/bot\d+:[A-Za-z0-9_-]+")
+
+
+def _scrub_secrets(text: str) -> str:
+    """Never echo Telegram bot tokens (httpx may log full URL on errors)."""
+    return _BOT_TOKEN_RE.sub("/bot<redacted>", text)[:500]
+
+
+def _trader_stdout_ok(out: str) -> bool:
+    """True if child already printed a successful tick JSON (ignore late print encoding flukes)."""
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            import json
+
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("ok") is True:
+            return True
+    return False
 
 
 async def _run_trader_now() -> None:
@@ -193,6 +219,8 @@ async def _run_trader_now() -> None:
     # Don't inherit poller's PYTHONPATH — it breaks venv (pywintypes / pywin32).
     env.pop("PYTHONPATH", None)
     env["VIRTUAL_ENV"] = str(ROOT / ".venv")
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     proc = await asyncio.create_subprocess_exec(
         py,
         str(TRADER),
@@ -203,8 +231,8 @@ async def _run_trader_now() -> None:
     )
     out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
     out = (out_b or b"").decode("utf-8", errors="replace")
-    if proc.returncode not in (0, None):
-        raise RuntimeError((out or f"exit {proc.returncode}")[:500])
+    if proc.returncode not in (0, None) and not _trader_stdout_ok(out):
+        raise RuntimeError(_scrub_secrets(out or f"exit {proc.returncode}"))
     print(f"trader_now ok: {out[:200].replace(chr(10), ' ')}", flush=True)
 
 

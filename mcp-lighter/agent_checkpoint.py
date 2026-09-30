@@ -4,14 +4,14 @@
 Usage:
   python agent_checkpoint.py save [--reason auto|manual|rotate] [--label "..."] [--notify]
   python agent_checkpoint.py rotate [--label "..."] [--source tg|cli|agent]
-  python agent_checkpoint.py heavy-check [--force]
+  python agent_checkpoint.py heavy-check [--force]  # no-op (disabled)
   python agent_checkpoint.py load [--id N | --latest] [--no-files] [--print-handoff]
   python agent_checkpoint.py list [--limit 20]
   python agent_checkpoint.py handoff [--id N | --latest]
 
 Save packs: trade/session/control JSON + brief + report stub → table agent_checkpoints.
 Load restores JSON files and prints a short handoff for a NEW Cursor chat.
-Rotate / heavy-check can push Telegram bootstrap instructions.
+Rotate can push Telegram bootstrap instructions. Auto heavy-chat TG nudge is disabled.
 """
 from __future__ import annotations
 
@@ -331,61 +331,13 @@ def maybe_heavy_notify(
     after_sec: int = HEAVY_AFTER_SEC,
     cooldown_sec: int = HEAVY_COOLDOWN_SEC,
 ) -> dict | None:
-    """If Cursor session is old, save rotate checkpoint + TG nudge (throttled).
+    """Disabled: Cursor is observer-only; no auto TG «heavy chat» nudges.
 
-    Skip when ticks_stopped. Prefer open LIT position (trading chat in use).
-    Does not reset the heavy timer — only load / explicit rotate does.
+    Keep CLI `heavy-check` as an explicit no-op so old scripts do not spam.
+    Manual rotate via TG `rotate` / `agent_checkpoint.py rotate` still works.
     """
-    st = _rotate_state()
-    now = int(time.time())
-    age = now - int(st.get("last_fresh_ts") or now)
-    brief = _load(BRIEF) or {}
-    control = _load(CONTROL) or {}
-    pos = brief.get("position") or {}
-    flat = bool(pos.get("flat", True)) if pos else True
-
-    if control.get("ticks_stopped"):
-        return {"ok": True, "skipped": "ticks_stopped"}
-    if not force:
-        if age < after_sec:
-            return None
-        if now - int(st.get("last_heavy_notify_ts") or 0) < cooldown_sec:
-            return {"ok": True, "skipped": "cooldown", "age_sec": age}
-        # Idle flat market: still remind, but less often (2x cooldown)
-        if flat and now - int(st.get("last_heavy_notify_ts") or 0) < cooldown_sec * 2:
-            if st.get("last_heavy_notify_ts"):
-                return {"ok": True, "skipped": "flat_cooldown", "age_sec": age}
-
-    out = save_checkpoint(
-        reason="rotate",
-        label="heavy-chat" if not force else "heavy-force",
-    )
-    age_min = max(1, age // 60)
-    text = bootstrap_tg_text(
-        checkpoint_id=out.get("id"),
-        reason=f"heavy ~{age_min}m since {st.get('last_event') or 'start'}",
-        line=out.get("line") or brief.get("line"),
-    )
-    if force:
-        text = "Agent flagged heavy context.\n" + text
-    try:
-        notify_telegram(text)
-        tg = "sent"
-    except Exception as e:  # noqa: BLE001
-        tg = f"error: {e!s}"[:160]
-
-    st = _rotate_state()
-    st["last_heavy_notify_ts"] = now
-    st["last_checkpoint_id"] = out.get("id")
-    st["last_heavy_event"] = "heavy_notify"
-    _dump(ROTATE_STATE, st)
-    return {
-        "ok": True,
-        "heavy": True,
-        "age_sec": age,
-        "checkpoint": out,
-        "tg": tg,
-    }
+    _ = (force, after_sec, cooldown_sec)
+    return {"ok": True, "skipped": "heavy_notify_disabled"}
 
 
 def maybe_autosave(*, min_interval_sec: int = AUTO_INTERVAL_SEC) -> dict | None:
