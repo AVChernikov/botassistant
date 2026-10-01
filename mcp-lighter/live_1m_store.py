@@ -19,12 +19,31 @@ def _ensure_columns(con) -> None:
     """Best-effort ALTER for existing MySQL tables (CREATE IF NOT EXISTS won't add cols)."""
     try:
         cols = {
-            str(r[0]).lower()
+            str(r["Field"] if hasattr(r, "keys") and "Field" in r.keys() else r[0]).lower()
             for r in con.execute("SHOW COLUMNS FROM live_1m_ticks").fetchall()
         }
+        # SHOW COLUMNS via our Row wrapper uses Field key when dict()-able; also support index 0
+        if not cols:
+            cols = {
+                str(r[0]).lower()
+                for r in con.execute("SHOW COLUMNS FROM live_1m_ticks").fetchall()
+            }
+    except Exception:
+        cols = set()
+    try:
+        # rebuild keys robustly
+        raw = con.execute("SHOW COLUMNS FROM live_1m_ticks").fetchall()
+        cols = set()
+        for r in raw:
+            try:
+                cols.add(str(r["Field"]).lower())
+            except Exception:
+                cols.add(str(r[0]).lower())
         if "resolution" not in cols:
             con.execute("ALTER TABLE live_1m_ticks ADD COLUMN resolution VARCHAR(8) NULL AFTER method")
-            con.commit()
+        if "position_size" not in cols:
+            con.execute("ALTER TABLE live_1m_ticks ADD COLUMN position_size DOUBLE NULL AFTER position_side")
+        con.commit()
     except Exception:
         pass
 
@@ -187,8 +206,8 @@ def save_tick_bundle(db_path: str, payload: dict) -> dict:
             INSERT INTO live_1m_ticks (
                 session_id, created_at, bar_ts, price, bid, ask, spread_bps,
                 method, resolution, roc_sig, sma_sig, method_sig, action, reason,
-                position_side, u_pnl, session_pnl, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                position_side, position_size, u_pnl, session_pnl, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sid,
@@ -206,6 +225,7 @@ def save_tick_bundle(db_path: str, payload: dict) -> dict:
                 tick.get("action"),
                 tick.get("reason"),
                 tick.get("position_side"),
+                tick.get("position_size"),
                 tick.get("u_pnl"),
                 tick.get("session_pnl"),
                 json.dumps(tick.get("payload") or {}, ensure_ascii=True),
@@ -433,7 +453,7 @@ def status_bundle(db_path: str, session_id: int | None = None, ticks: int = 40, 
                 """
                 SELECT id, created_at, bar_ts, price, bid, ask, spread_bps,
                        method, resolution, roc_sig, sma_sig, method_sig, action, reason,
-                       position_side, u_pnl, session_pnl
+                       position_side, position_size, u_pnl, session_pnl
                 FROM live_1m_ticks WHERE session_id=? ORDER BY id DESC LIMIT ?
                 """,
                 (sid, int(ticks)),

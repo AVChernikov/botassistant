@@ -112,6 +112,25 @@
     .chart-sub {
       margin: 0.45rem 0 0; font-size: 0.78rem; color: var(--muted);
     }
+    .tf-switch {
+      display: inline-flex; gap: 0.35rem; align-items: center;
+      margin: 0 0 0.55rem;
+    }
+    .tf-switch .lab {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--muted); margin-right: 0.15rem;
+    }
+    .tf-btn {
+      border: 1px solid var(--line); background: rgba(255,255,255,0.7);
+      border-radius: 999px; padding: 0.28rem 0.75rem;
+      font: inherit; font-size: 0.82rem; font-weight: 650; cursor: pointer;
+      color: var(--ink);
+    }
+    .tf-btn:hover { border-color: var(--accent); }
+    .tf-btn.active {
+      background: var(--accent); color: #fff; border-color: var(--accent);
+    }
+    .tf-btn:disabled { opacity: 0.55; cursor: wait; }
     .levels-box {
       margin-top: 0.7rem;
       padding: 0.65rem 0.75rem;
@@ -183,8 +202,8 @@
   <div class="wrap">
     <header>
       <div>
-        <div class="brand">live <span>1m</span></div>
-        <p class="subtitle">LIVE сессия 30с: стакан + 1m → Flash-метод → реальные ордера на Lighter. Эмуляция: <a href="sim-1m.php" style="color:var(--accent);font-weight:600;text-decoration:none">sim-1m</a>.</p>
+        <div class="brand">live <span>LIT</span></div>
+        <p class="subtitle">LIVE сессия 30с: стакан + сигнал по выбранному ТФ (1m/5m); Flash раз в ~5 мин может сменить метод и ТФ. Эмуляция: <a href="sim-1m.php" style="color:var(--accent);font-weight:600;text-decoration:none">sim-1m</a>.</p>
       </div>
       <div class="nav">
         <a href="index.php">← index</a>
@@ -196,8 +215,13 @@
     </header>
 
     <div class="panel" id="simChartPanel">
+      <div class="tf-switch" id="tfSwitch" title="Сигналы и сделки по выбранному таймфрейму">
+        <span class="lab">ТФ</span>
+        <button type="button" class="tf-btn active" data-tf="1m">1m</button>
+        <button type="button" class="tf-btn" data-tf="5m">5m</button>
+      </div>
       <div class="chart-head">
-        <div class="method">1m · <span id="simChartMethod">ROC(10) zero-cross · 1m</span></div>
+        <div class="method">сигнал · <span id="simChartMethod">ROC(10) zero-cross · 1m</span></div>
         <div class="chart-meta" id="simChartMeta">загрузка…</div>
       </div>
       <div class="chart-wrap"><canvas id="simPriceChart"></canvas></div>
@@ -214,20 +238,44 @@
         </div>
         <p class="levels-hint">Radio лота — на <b>следующую</b> сделку. Кнопка «лот → поз.» — добор/сокращение <b>текущей</b> позиции до выбранного лота по mark. SL/TP → меняют текущие уровни.</p>
       </div>
-      <p class="chart-sub">График 1m; метод — Flash.</p>
+      <p class="chart-sub">График = выбранный ТФ; метод — Flash (или текущий). Переключатель сразу меняет сигнал/сделки.</p>
+    </div>
+
+    <div class="section-label">официально с Lighter</div>
+    <div class="panel" id="exOfficialPanel">
+      <div class="chart-head" style="margin-bottom:0.65rem">
+        <div class="method">биржа · <span id="exOfficialTitle">LIT #120</span></div>
+        <div class="chart-meta" id="exOfficialMeta">загрузка…</div>
+      </div>
+      <div class="stats" id="exPositionStats">
+        <div class="stat"><div class="k">позиция</div><div class="v muted">—</div></div>
+      </div>
+      <h2 style="margin-top:1rem">Активные ордера</h2>
+      <div style="overflow:auto;max-height:260px">
+        <table>
+          <thead>
+            <tr>
+              <th>тип</th><th>side</th><th>size</th><th>лот$</th>
+              <th>trigger</th><th>price</th><th>status</th><th>idx</th>
+            </tr>
+          </thead>
+          <tbody id="exOrdersBody"><tr><td colspan="8" class="muted">нет ордеров</td></tr></tbody>
+        </table>
+      </div>
+      <p class="note" style="margin-top:0.65rem">Источник: Lighter account API (не paper-сессия). Обновляется вместе с тиком / при загрузке.</p>
     </div>
 
     <div class="section-label">live trading</div>
     <div class="panel">
       <div class="row">
-        <button class="btn-go" id="btnStart">Запустить LIVE 1m</button>
+        <button class="btn-go" id="btnStart">Запустить LIVE</button>
         <button class="btn-stop" id="btnStop" disabled>Стоп</button>
         <span class="pill live" id="modePill">режим: LIVE</span>
         <span class="pill" id="methodPill" title="метод выбирает DeepSeek Flash">Flash · —</span>
         <span class="pill off" id="runPill">stopped</span>
         <span class="muted mono" id="metaLine">session —</span>
       </div>
-      <p class="note"><b style="color:var(--ask)">REAL ORDERS.</b> Live лот выбирается под графиком (50…400). DeepSeek Pro — отдельный лот. На одном аккаунте они <b>складываются</b> в net. Stop/TP/SL live закрывают <b>только размер live-сессии</b>. Не включай live-позицию DeepSeek в adopt. Эмуляция: <a href="sim-1m.php">sim-1m</a>.</p>
+      <p class="note"><b style="color:var(--ask)">REAL ORDERS.</b> Live лот выбирается под графиком (50…400). DeepSeek Pro — отдельный лот. На одном аккаунте они <b>складываются</b> в net. <b>Стоп</b> закрывает все позиции на аккаунте, снимает все ордера и делает повторную проверку. Эмуляция: <a href="sim-1m.php">sim-1m</a>.</p>
       <div class="stats" id="stats"></div>
     </div>
 
@@ -237,9 +285,9 @@
         <div style="overflow:auto;max-height:420px">
           <table>
             <thead>
-              <tr><th>время</th><th>метод</th><th>px</th><th>sig</th><th>action</th><th>uPnL</th><th>sess</th></tr>
+              <tr><th>время</th><th>метод</th><th>px</th><th>sig</th><th>size</th><th>action</th><th>uPnL</th><th>sess</th></tr>
             </thead>
-            <tbody id="ticksBody"><tr><td colspan="7" class="muted">нет данных</td></tr></tbody>
+            <tbody id="ticksBody"><tr><td colspan="8" class="muted">нет данных</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -248,9 +296,9 @@
         <div style="overflow:auto;max-height:420px">
           <table>
             <thead>
-              <tr><th>время</th><th>act</th><th>side</th><th>px</th><th>pnl</th></tr>
+              <tr><th>время</th><th>act</th><th>side</th><th>px</th><th>size</th><th>лот$</th><th>pnl</th></tr>
             </thead>
-            <tbody id="tradesBody"><tr><td colspan="5" class="muted">нет сделок</td></tr></tbody>
+            <tbody id="tradesBody"><tr><td colspan="7" class="muted">нет сделок</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -263,19 +311,20 @@
   </div>
 
   <div class="modal-back" id="adoptModal" role="dialog" aria-modal="true">
-    <div class="modal">
-      <h3>Открытые позиции</h3>
-      <p>Окно открыто снова. Какие позиции включить в LIVE-сессию? Live-лот = $200; DeepSeek — отдельный лот. Не отмечай чужую live-позицию DeepSeek, иначе Stop закроет и её. При Stop — close только размера сессии.</p>
+    <div class="modal" style="width:min(640px,100%)">
+      <h3>Позиции и ордера на Lighter</h3>
+      <p>При старте / обновлении страницы — снимок с биржи. Отметь, что включить в LIVE-сессию. Согласие сохранит позицию и ордера (лот, TP/SL) в таблицу <code>live_ex_*</code>.</p>
+      <div id="exchangeSummary" class="pos-meta" style="margin:0 0 .75rem;padding:.55rem .65rem;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.7)"></div>
       <div id="adoptList"></div>
       <div class="actions">
         <button type="button" class="btn-skip" id="adoptSkip">Пропустить</button>
-        <button type="button" class="btn-ok" id="adoptOk">Включить выбранные</button>
+        <button type="button" class="btn-ok" id="adoptOk">Принять выбранные</button>
       </div>
     </div>
   </div>
 
   <script src="chart-candles.js?v=2"></script>
-  <script src="sim-1m-chart.js?v=7"></script>
+  <script src="sim-1m-chart.js?v=8"></script>
   <script>
     const API = 'api.php';
     const STATUS_ACTION = 'live_1m_status';
@@ -283,8 +332,9 @@
     const SET_LEVELS_ACTION = 'live_1m_set_levels';
     const LS_KEY = 'live_1m_levels';
     const LOT_OPTS = [50, 100, 150, 200, 250, 300, 350, 400];
-    const SL_OPTS = [1, 2, 3, 5, 10, 15, 20, 25, 30];
-    const TP_OPTS = [1, 2, 3, 5, 10, 15, 20, 25, 30];
+    const SL_OPTS = [0.5, 1, 2, 3, 5, 10, 15, 20, 25, 30];
+    const TP_OPTS = [0.5, 1, 2, 3, 5, 10, 15, 20, 25, 30];
+    const TF_OPTS = ['1m', '5m'];
     let sessionId = null;
     try {
       const saved = localStorage.getItem('live_1m_session_id');
@@ -294,6 +344,11 @@
     let timer = null;
     let tickSec = 30;
     let levelsState = { lot: 200, sl: 30, tp: 30 };
+    let selectedTf = '1m';
+    try {
+      const tfSaved = localStorage.getItem('live_1m_tf');
+      if (TF_OPTS.includes(tfSaved)) selectedTf = tfSaved;
+    } catch (_) {}
     let lastEntry = null;
     let lastSide = null;
     let lastMark = null;
@@ -302,6 +357,45 @@
 
     const $ = (id) => document.getElementById(id);
     const fmt = (n, d = 2) => (n == null || Number.isNaN(Number(n))) ? '—' : Number(n).toFixed(d);
+
+    function syncTfUi(tf) {
+      if (!TF_OPTS.includes(tf)) return;
+      selectedTf = tf;
+      try { localStorage.setItem('live_1m_tf', tf); } catch (_) {}
+      document.querySelectorAll('#tfSwitch .tf-btn').forEach((btn) => {
+        btn.classList.toggle('active', btn.getAttribute('data-tf') === tf);
+      });
+    }
+
+    async function applyTf(tf) {
+      if (!TF_OPTS.includes(tf) || tf === selectedTf) {
+        syncTfUi(tf);
+        return;
+      }
+      syncTfUi(tf);
+      if (window.Sim1mChart) {
+        const m = Sim1mChart.currentMethod ? Sim1mChart.currentMethod() : 'ROC(10) zero-cross';
+        Sim1mChart.setLead(m, tf, { force: true });
+      }
+      if (!sessionId) return;
+      const btns = document.querySelectorAll('#tfSwitch .tf-btn');
+      btns.forEach((b) => { b.disabled = true; });
+      try {
+        const res = await api('live_1m_set_resolution', {
+          session_id: String(sessionId),
+          resolution: tf,
+        });
+        if (!res.ok) {
+          alert(res.error || 'не удалось сменить ТФ');
+          return;
+        }
+        await refresh();
+      } catch (e) {
+        alert(String(e.message || e));
+      } finally {
+        btns.forEach((b) => { b.disabled = false; });
+      }
+    }
 
     function pickOnePct(raw, opts, fallback) {
       if (Array.isArray(raw) && raw.length) {
@@ -549,8 +643,9 @@
         methodPill.title = 'DeepSeek Flash → ' + leadingMethod + ' @ ' + leadingRes;
       }
       if (window.Sim1mChart) {
-        Sim1mChart.setLead(leadingMethod, '1m');
+        Sim1mChart.setLead(leadingMethod, leadingRes);
       }
+      syncTfUi(leadingRes);
 
       const methodLabel = (name) => {
         if (!name) return '—';
@@ -572,17 +667,20 @@
             const r = t.resolution || leadingRes;
             const sig = t.method_sig;
             const sigTxt = sig == null ? '—' : (sig > 0 ? `+${sig}` : String(sig));
+            const psz = t.position_size != null ? t.position_size
+              : (t.payload && t.payload.position_size != null ? t.payload.position_size : null);
             return `<tr>
             <td class="mono">${ts(t.created_at)}</td>
             <td title="${m} @ ${r}">${methodLabel(m)} <span class="muted">${r}</span><div class="muted mono">sig ${sigTxt}</div></td>
             <td class="mono">${fmt(t.price, 4)}</td>
             <td class="mono">${sigTxt}</td>
+            <td class="mono">${psz != null ? fmt(psz, 4) : (t.position_side || '—')}</td>
             <td>${t.action || '—'}<div class="muted">${t.reason || ''}</div></td>
             <td class="mono ${clsPnL(t.u_pnl)}">${fmt(t.u_pnl)}</td>
             <td class="mono ${clsPnL(t.session_pnl)}">${fmt(t.session_pnl)}</td>
           </tr>`;
           }).join('')
-        : '<tr><td colspan="7" class="muted">нет тиков</td></tr>';
+        : '<tr><td colspan="8" class="muted">нет тиков</td></tr>';
 
       const trades = data.trades || [];
       $('tradesBody').innerHTML = trades.length
@@ -591,9 +689,11 @@
             <td>${t.action}</td>
             <td>${t.side || '—'}</td>
             <td class="mono">${fmt(t.price, 4)}</td>
+            <td class="mono">${t.size != null ? fmt(t.size, 4) : '—'}</td>
+            <td class="mono">${t.quote_usd != null ? fmt(t.quote_usd, 0) : '—'}</td>
             <td class="mono ${clsPnL(t.pnl)}">${fmt(t.pnl)}</td>
           </tr>`).join('')
-        : '<tr><td colspan="5" class="muted">нет сделок</td></tr>';
+        : '<tr><td colspan="7" class="muted">нет сделок</td></tr>';
 
       const logs = data.logs || [];
       $('logs').innerHTML = logs.length
@@ -607,17 +707,93 @@
       return r.json();
     }
 
+    function renderExchangeOfficial(ex) {
+      const meta = $('exOfficialMeta');
+      const title = $('exOfficialTitle');
+      const stats = $('exPositionStats');
+      const body = $('exOrdersBody');
+      if (!meta || !stats || !body) return;
+      if (!ex || !ex.ok) {
+        meta.textContent = (ex && ex.error) ? ('ошибка: ' + ex.error) : 'нет данных';
+        meta.classList.add('error');
+        return;
+      }
+      meta.classList.remove('error');
+      const p = ex.position;
+      const s = ex.summary || {};
+      const mid = ex.market_id != null ? ex.market_id : 120;
+      if (title) title.textContent = ((p && p.symbol) ? p.symbol : 'LIT') + ' #' + mid;
+      const when = ex.fetched_at ? ts(ex.fetched_at) : 'сейчас';
+      meta.textContent = `обновлено ${when} · ордеров ${s.orders_count ?? 0} · TP ${s.tp_count ?? 0}/SL ${s.sl_count ?? 0}`;
+
+      if (!p) {
+        stats.innerHTML = `
+          <div class="stat"><div class="k">позиция</div><div class="v">flat</div></div>
+          <div class="stat"><div class="k">лот позиции</div><div class="v">—</div></div>
+          <div class="stat"><div class="k">uPnL</div><div class="v">—</div></div>
+          <div class="stat"><div class="k">ордера (лот∑)</div><div class="v">$${fmt(s.orders_lot_usd, 2)}</div></div>
+        `;
+      } else {
+        const up = p.unrealized_pnl != null ? p.unrealized_pnl : p.u_pnl;
+        stats.innerHTML = `
+          <div class="stat"><div class="k">позиция</div><div class="v">${p.side || '—'} · ${fmt(p.size, 4)}</div></div>
+          <div class="stat"><div class="k">entry</div><div class="v mono">${fmt(p.entry_price, 4)}</div></div>
+          <div class="stat"><div class="k">лот ≈$</div><div class="v">${fmt(p.lot_usd, 2)}</div></div>
+          <div class="stat"><div class="k">uPnL</div><div class="v ${clsPnL(up)}">${fmt(up)}</div></div>
+          <div class="stat"><div class="k">value</div><div class="v">${fmt(p.position_value, 2)}</div></div>
+          <div class="stat"><div class="k">liq</div><div class="v mono">${fmt(p.liquidation_price, 4)}</div></div>
+          <div class="stat"><div class="k">ордера</div><div class="v">${s.orders_count ?? 0} · ∑$${fmt(s.orders_lot_usd, 2)}</div></div>
+        `;
+      }
+
+      const orders = ex.orders || [];
+      body.innerHTML = orders.length
+        ? orders.map((o) => {
+            const trig = o.trigger_price != null ? o.trigger_price : null;
+            const px = o.price != null ? o.price : null;
+            return `<tr>
+              <td>${o.order_type || '—'}</td>
+              <td class="mono">${o.side || (o.is_ask ? 'ask' : 'bid')}</td>
+              <td class="mono">${o.remaining_size != null ? fmt(o.remaining_size, 4) : fmt(o.size, 4)}</td>
+              <td class="mono">${o.lot_usd != null ? fmt(o.lot_usd, 2) : '—'}</td>
+              <td class="mono">${trig != null ? fmt(trig, 4) : '—'}</td>
+              <td class="mono">${px != null ? fmt(px, 4) : '—'}</td>
+              <td>${o.status || '—'}${o.reduce_only ? ' · RO' : ''}</td>
+              <td class="mono" style="font-size:0.72rem">${o.order_index ?? '—'}</td>
+            </tr>`;
+          }).join('')
+        : '<tr><td colspan="8" class="muted">нет активных ордеров</td></tr>';
+    }
+
+    async function refreshExchangeOfficial() {
+      try {
+        const ex = await api('live_1m_exchange', { market_id: '120' });
+        renderExchangeOfficial(ex);
+      } catch (e) {
+        renderExchangeOfficial({ ok: false, error: String(e) });
+      }
+    }
+
     async function refresh() {
       const data = await api('live_1m_status', sessionId ? { session_id: String(sessionId) } : {});
       if (data.ok) renderStatus(data);
+      await refreshExchangeOfficial();
     }
 
     async function doTick() {
       if (!running) return;
       try {
-        await api('live_1m_tick', sessionId ? { session_id: String(sessionId) } : {});
-        await refresh();
-        // refresh() already syncs leading method+TF → chart via setLead
+        // Background live_1m_loop.php places orders. Browser only polls status
+        // when the loop is alive — avoids double flip (2× size on Lighter).
+        const st = await api('live_1m_status', sessionId ? { session_id: String(sessionId) } : {});
+        if (st.ok) renderStatus(st);
+        const loopAlive = !!(st.loop && st.loop.alive);
+        if (!loopAlive) {
+          await api('live_1m_tick', sessionId ? { session_id: String(sessionId) } : {});
+          await refresh();
+        } else {
+          await refreshExchangeOfficial();
+        }
       } catch (e) {
         console.error(e);
       }
@@ -625,7 +801,10 @@
 
     function armTimer() {
       if (timer) clearInterval(timer);
-      timer = setInterval(doTick, Math.max(10000, tickSec * 1000));
+      // Live cadence: page refresh + signal = 30s; Flash pick ≈ every 5 min
+      const sec = Math.max(30, Number(tickSec) || 30);
+      tickSec = sec;
+      timer = setInterval(doTick, sec * 1000);
     }
 
     $('btnStart').onclick = async () => {
@@ -636,6 +815,7 @@
           market_id: '120',
           lot_usd: String(levelsState.lot),
           tick_sec: '30',
+          resolution: selectedTf || '1m',
           tp_levels: JSON.stringify([levelsState.tp]),
           sl_levels: JSON.stringify([levelsState.sl]),
         });
@@ -648,7 +828,25 @@
         persistSession(sessionId);
         setRunUi(true);
         const m = res.method || res.first_tick?.tick?.method || res.method_pick?.method;
-        if (m && window.Sim1mChart) Sim1mChart.setLead(m, '1m', { force: true });
+        if (m && window.Sim1mChart) {
+          const tf = res.resolution || selectedTf || '1m';
+          syncTfUi(tf);
+          Sim1mChart.setLead(m, tf, { force: true });
+        }
+        // Show exchange positions/orders for explicit adopt into live_ex_* tables
+        const cand = await api('live_1m_candidates', { session_id: String(sessionId) });
+        const list = (cand && cand.candidates) || [];
+        const ex = (cand && cand.exchange) || null;
+        if (list.length || (ex && (ex.position || (ex.orders || []).length))) {
+          const chosen = await askAdopt(list, ex);
+          if (chosen !== null) {
+            const adopted = await api('live_1m_adopt', {
+              session_id: String(sessionId),
+              selected: JSON.stringify(chosen),
+            });
+            if (adopted.ok) renderStatus(adopted);
+          }
+        }
         await refresh();
         armTimer();
       } catch (e) {
@@ -664,8 +862,12 @@
         if (timer) clearInterval(timer);
         timer = null;
         setRunUi(false);
-        if (res.closed_position && res.closed_position.ok) {
-          console.info('closed paper', res.closed_position);
+        const v = res.verify || {};
+        if (v.flat) {
+          console.info('stop flatten OK', res.flatten);
+        } else {
+          alert('Стоп: на бирже ещё осталось — позиция или ордера. Проверь блок «официально с Lighter».');
+          console.warn('stop not flat', res.flatten, v);
         }
         await refresh();
       } catch (e) {
@@ -691,8 +893,9 @@
 
       const cand = await api('live_1m_candidates', sessionId ? { session_id: String(sessionId) } : {});
       const list = (cand && cand.candidates) || [];
-      if (list.length) {
-        const chosen = await askAdopt(list);
+      const ex = (cand && cand.exchange) || null;
+      if (list.length || (ex && (ex.position || (ex.orders || []).length))) {
+        const chosen = await askAdopt(list, ex);
         if (chosen !== null) {
           const adopted = await api('live_1m_adopt', {
             session_id: sessionId ? String(sessionId) : '',
@@ -708,23 +911,55 @@
       if (running) armTimer();
     }
 
-    function askAdopt(candidates) {
+    function orderLines(orders) {
+      if (!orders || !orders.length) return '<div class="pos-meta">ордеров нет</div>';
+      return orders.map((o) => {
+        const trig = o.trigger_price != null ? o.trigger_price : o.price;
+        return `<div class="pos-meta mono" style="margin-top:.25rem">
+          ${o.order_type || '?'} · idx ${o.order_index ?? '—'}
+          · rem ${o.remaining_size != null ? fmt(o.remaining_size, 4) : '—'}
+          · trig/px ${trig != null ? fmt(trig, 4) : '—'}
+          · лот≈$${o.lot_usd != null ? fmt(o.lot_usd, 2) : '—'}
+          · ${o.status || ''} ${o.reduce_only ? 'RO' : ''}
+        </div>`;
+      }).join('');
+    }
+
+    function askAdopt(candidates, exchange) {
       return new Promise((resolve) => {
         const back = $('adoptModal');
         const box = $('adoptList');
-        box.innerHTML = candidates.map((c) => {
+        const sum = $('exchangeSummary');
+        if (sum) {
+          if (exchange && exchange.ok) {
+            const p = exchange.position;
+            const s = exchange.summary || {};
+            sum.innerHTML = p
+              ? `<b>Биржа</b>: ${p.side} ${p.symbol || ''} size=${fmt(p.size, 4)} entry=${fmt(p.entry_price, 4)}
+                 лот≈$${fmt(p.lot_usd, 2)} uPnL=${fmt(p.u_pnl ?? p.unrealized_pnl, 2)}
+                 · ордеров ${s.orders_count ?? 0} (TP ${s.tp_count ?? 0}/SL ${s.sl_count ?? 0})
+                 · sum ордеров ≈$${fmt(s.orders_lot_usd, 2)}`
+              : `<b>Биржа</b>: позиций нет · ордеров ${s.orders_count ?? 0}`;
+          } else {
+            sum.textContent = 'снимок биржи недоступен';
+          }
+        }
+        box.innerHTML = (candidates || []).map((c) => {
           const id = String(c.id).replace(/"/g, '');
           const checked = c.default_checked ? 'checked' : '';
           const meta = [
             c.source,
             c.side,
             c.symbol || '',
+            c.size != null ? 'size ' + fmt(c.size, 4) : '',
+            c.lot_usd != null ? 'лот≈$' + fmt(c.lot_usd, 2) : '',
             c.entry != null ? 'entry ' + fmt(c.entry, 4) : '',
             c.u_pnl != null ? 'uPnL ' + fmt(c.u_pnl, 2) : '',
+            c.on_exchange === false ? 'нет на Lighter' : '',
           ].filter(Boolean).join(' · ');
           return `<label class="pos"><input type="checkbox" value="${id}" ${checked}>
-            <span><b>${c.label || id}</b><div class="pos-meta">${meta}</div></span></label>`;
-        }).join('');
+            <span><b>${c.label || id}</b><div class="pos-meta">${meta}</div>${orderLines(c.orders)}</span></label>`;
+        }).join('') || '<div class="muted">кандидатов в сессии нет — только снимок биржи выше</div>';
         back.classList.add('show');
         const done = (ids) => {
           back.classList.remove('show');
@@ -742,9 +977,14 @@
 
     loadLevelsLocal();
     buildLevelsUi();
+    syncTfUi(selectedTf);
+    document.querySelectorAll('#tfSwitch .tf-btn').forEach((btn) => {
+      btn.addEventListener('click', () => applyTf(btn.getAttribute('data-tf')));
+    });
+    refreshExchangeOfficial();
     boot();
     if (window.Sim1mChart) {
-      Sim1mChart.start({ method: 'ROC(10) zero-cross', resolution: '1m', refreshSec: 30 });
+      Sim1mChart.start({ method: 'ROC(10) zero-cross', resolution: selectedTf || '1m', refreshSec: 30 });
     }
   </script>
 </body>

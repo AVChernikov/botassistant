@@ -11,10 +11,10 @@ namespace Lighter;
 final class Live1mEngine
 {
     private const FEE_BPS = 2.0; // ~0.02% per side (open + close); net session PnL includes both
-    /** Ask Flash to re-pick leading method+TF every N ticks (~2m at 30s). */
-    private const METHOD_PICK_EVERY_TICKS = 4;
-    /** Signal TF: only 1m (DeepSeek picks method on this frame). */
-    private const SIGNAL_TFS = ['1m'];
+    /** Ask Flash to re-pick leading method+TF every N ticks (10 × 30s ≈ 5 min). */
+    private const METHOD_PICK_EVERY_TICKS = 10;
+    /** Signal TFs Flash/UI may use for entries. */
+    private const SIGNAL_TFS = ['1m', '5m'];
 
     private static int $activeMarketId = 120;
 
@@ -25,10 +25,10 @@ final class Live1mEngine
     }
 
     private const METHOD_PICK_PROMPT = <<<'PROMPT'
-Ты DeepSeek Flash. Выбери ОДИН ведущий метод для paper-сигналов LIT на таймфрейме 1m.
+Ты DeepSeek Flash. Выбери ОДИН ведущий метод и таймфрейм для LIVE-сигналов LIT.
 Ответь СТРОГО JSON без markdown:
-{"method":"ROC(10) zero-cross","resolution":"1m","why":"кратко почему","confidence":0.0}
-method — только из candidates.methods; resolution всегда "1m".
+{"method":"ROC(10) zero-cross","resolution":"5m","why":"кратко почему","confidence":0.0}
+method — только из candidates.methods; resolution — только "1m" или "5m" из candidates.resolutions.
 PROMPT;
 
     /**
@@ -43,12 +43,21 @@ PROMPT;
         ]);
         $sym = (string) (($details['d']['order_book_details'][0]['symbol'] ?? null) ?: 'LIT');
 
+        $startRes = (string) ($opts['resolution'] ?? '1m');
+        if (!in_array($startRes, self::SIGNAL_TFS, true)) {
+            $startRes = '1m';
+        }
+        $startMethod = (string) ($opts['method'] ?? 'ROC(10) zero-cross');
+        if (!in_array($startMethod, TechnicalAnalysis::METHODS, true)) {
+            $startMethod = 'ROC(10) zero-cross';
+        }
+
         $start = Live1mStore::start($cfg->dbPath(), [
             'market_id' => $marketId,
             'symbol' => $sym,
-            'resolution' => '1m',
+            'resolution' => $startRes,
             // Placeholder until Flash picks method on first tick
-            'method' => 'ROC(10) zero-cross',
+            'method' => $startMethod,
             'lot_usd' => (float) ($opts['lot_usd'] ?? 200),
             'tick_sec' => (int) ($opts['tick_sec'] ?? 30),
             'tp_pct' => (float) ($opts['tp_pct'] ?? 50),
@@ -80,7 +89,8 @@ PROMPT;
     }
 
     /**
-     * Stop session: close open paper position at mark, then mark stopped + kill loop.
+     * Stop session: kill loop, flatten ALL exchange positions + cancel orders,
+     * verify once more, then mark session stopped.
      *
      * @return array<string, mixed>
      */
@@ -89,16 +99,44 @@ PROMPT;
         $db = $cfg->dbPath();
         $wrap = Live1mStore::session($db, $sessionId);
         $sess = $wrap['session'] ?? null;
-        $closed = null;
+        $mid = is_array($sess) ? (int) ($sess['market_id'] ?? 120) : 120;
+        $sid = is_array($sess) ? (int) ($sess['id'] ?? 0) : null;
 
-        if (is_array($sess) && ($sess['status'] ?? '') === 'running' && !empty($sess['position_side'])) {
-            $closed = self::closeOpenPositionAtMark($client, $cfg, $sess, 'stop');
+        // Stop loop first so it cannot reopen while we flatten.
+        $loop = self::stopLoop();
+
+        self::$activeMarketId = $mid;
+        // Full flatten: cancel orders → close position(s) → cancel again → verify (+ retry).
+        $flatten = self::liveExec('flatten_all', []);
+        // Also ensure session market is clean even if positions list was empty.
+        if (empty($flatten['flat'])) {
+            $flattenMarket = self::liveExec('flatten', ['--market-id', (string) $mid]);
+            $flatten['market_retry'] = $flattenMarket;
+            $flatten['flat'] = !empty($flattenMarket['flat']);
+            $flatten['ok'] = !empty($flattenMarket['ok']);
+        }
+
+        $verify = self::exchangeDetail($mid);
+        $stillPos = is_array($verify['position'] ?? null);
+        $stillOrd = is_array($verify['orders'] ?? null) && ($verify['orders'] !== []);
+        if ($stillPos || $stillOrd) {
+            $flatten['verify_pass2'] = self::liveExec('flatten', ['--market-id', (string) $mid]);
+            $verify = self::exchangeDetail($mid);
+            $stillPos = is_array($verify['position'] ?? null);
+            $stillOrd = is_array($verify['orders'] ?? null) && ($verify['orders'] !== []);
         }
 
         $out = Live1mStore::stop($db, $sessionId);
-        $out['loop'] = self::stopLoop();
-        if ($closed !== null) {
-            $out['closed_position'] = $closed;
+        $out['loop'] = $loop;
+        $out['flatten'] = $flatten;
+        $out['verify'] = [
+            'flat' => !$stillPos && !$stillOrd,
+            'position' => $verify['position'] ?? null,
+            'orders' => $verify['orders'] ?? [],
+            'summary' => $verify['summary'] ?? null,
+        ];
+        if ($sid) {
+            $out['ex_state'] = self::syncExchangeState($sid, $mid, 'stop_flatten', false);
         }
 
         return $out;
@@ -149,29 +187,9 @@ PROMPT;
         $candidates = [];
         $wrap = Live1mStore::session($cfg->dbPath(), $sessionId);
         $sess = $wrap['session'] ?? null;
-        if (is_array($sess) && ($sess['status'] ?? '') === 'running' && !empty($sess['position_side'])) {
-            $candidates[] = [
-                'id' => 'paper:' . (int) $sess['id'],
-                'source' => 'paper',
-                'session_id' => (int) $sess['id'],
-                'market_id' => (int) ($sess['market_id'] ?? 120),
-                'symbol' => (string) ($sess['symbol'] ?? 'LIT'),
-                'side' => (string) $sess['position_side'],
-                'size' => isset($sess['position_size']) ? (float) $sess['position_size'] : null,
-                'entry' => isset($sess['entry_price']) ? (float) $sess['entry_price'] : null,
-                'u_pnl' => null,
-                'label' => sprintf(
-                    'paper #%d · %s %s @ %s',
-                    (int) $sess['id'],
-                    $sess['position_side'],
-                    $sess['symbol'] ?? 'LIT',
-                    $sess['entry_price'] ?? '—',
-                ),
-                'default_checked' => true,
-            ];
-        }
 
         $liveErr = null;
+        $liveByMarket = [];
         try {
             $idx = self::lighterAccountIndex();
             if ($idx !== null) {
@@ -191,6 +209,8 @@ PROMPT;
                             continue;
                         }
                         $size = (float) ($p['position'] ?? 0);
+                        $mid = (int) ($p['market_id'] ?? 0);
+                        $liveByMarket[$mid] = abs($size);
                         if (abs($size) < 1e-12) {
                             continue;
                         }
@@ -199,25 +219,37 @@ PROMPT;
                         if ($side !== 'long' && $side !== 'short') {
                             continue;
                         }
-                        $mid = (int) ($p['market_id'] ?? 0);
                         $sym = (string) ($p['symbol'] ?? ('m' . $mid));
                         $entry = isset($p['avg_entry_price']) ? (float) $p['avg_entry_price'] : null;
+                        $absSize = abs($size);
+                        $lotUsd = ($entry !== null && $entry > 0) ? round($absSize * $entry, 4) : null;
+                        $detail = self::exchangeDetail($mid);
+                        $orders = is_array($detail['orders'] ?? null) ? $detail['orders'] : [];
                         $candidates[] = [
                             'id' => 'live:' . $mid,
                             'source' => 'live',
                             'market_id' => $mid,
                             'symbol' => $sym,
                             'side' => $side,
-                            'size' => abs($size),
+                            'size' => $absSize,
                             'entry' => $entry,
                             'u_pnl' => isset($p['unrealized_pnl']) ? (float) $p['unrealized_pnl'] : null,
+                            'lot_usd' => $lotUsd,
+                            'position_value' => isset($p['position_value']) ? (float) $p['position_value'] : null,
+                            'liquidation_price' => isset($p['liquidation_price']) ? (float) $p['liquidation_price'] : null,
+                            'open_order_count' => isset($p['open_order_count']) ? (int) $p['open_order_count'] : count($orders),
+                            'orders' => $orders,
+                            'exchange_summary' => $detail['summary'] ?? null,
+                            'on_exchange' => true,
                             'label' => sprintf(
-                                'live · %s %s size=%s entry=%s uPnL=%s',
+                                'live · %s %s size=%s lot≈$%s entry=%s uPnL=%s · orders=%d',
                                 $side,
                                 $sym,
-                                $size,
+                                $absSize,
+                                $lotUsd ?? '—',
                                 $entry ?? '—',
                                 $p['unrealized_pnl'] ?? '—',
+                                count($orders),
                             ),
                             // Do not auto-claim DeepSeek/other lot as live-session position.
                             'default_checked' => false,
@@ -231,6 +263,33 @@ PROMPT;
             $liveErr = $e->getMessage();
         }
 
+        if (is_array($sess) && ($sess['status'] ?? '') === 'running' && !empty($sess['position_side'])) {
+            $mid = (int) ($sess['market_id'] ?? 120);
+            $onEx = ($liveByMarket[$mid] ?? 0.0) >= 1e-12;
+            $candidates[] = [
+                'id' => 'paper:' . (int) $sess['id'],
+                'source' => 'paper',
+                'session_id' => (int) $sess['id'],
+                'market_id' => $mid,
+                'symbol' => (string) ($sess['symbol'] ?? 'LIT'),
+                'side' => (string) $sess['position_side'],
+                'size' => isset($sess['position_size']) ? (float) $sess['position_size'] : null,
+                'entry' => isset($sess['entry_price']) ? (float) $sess['entry_price'] : null,
+                'u_pnl' => null,
+                'on_exchange' => $onEx,
+                'label' => sprintf(
+                    'paper #%d · %s %s @ %s%s',
+                    (int) $sess['id'],
+                    $sess['position_side'],
+                    $sess['symbol'] ?? 'LIT',
+                    $sess['entry_price'] ?? '—',
+                    $onEx ? '' : ' · нет на Lighter',
+                ),
+                // Stale DB paper (flat on exchange) must not auto-adopt.
+                'default_checked' => $onEx,
+            ];
+        }
+
         return [
             'ok' => true,
             'candidates' => $candidates,
@@ -239,6 +298,7 @@ PROMPT;
                 'status' => $sess['status'] ?? null,
             ] : null,
             'live_error' => $liveErr,
+            'exchange' => self::exchangeDetail((int) ($sess['market_id'] ?? 120)),
         ];
     }
 
@@ -326,7 +386,9 @@ PROMPT;
                 'sl' => $sl,
                 'reason' => 'adopt live ' . ($liveSelected['symbol'] ?? ''),
             ], $sid);
-            $actions[] = ['adopt_live' => $set, 'from' => $liveSelected['id']];
+            $mid = (int) ($liveSelected['market_id'] ?? $sess['market_id'] ?? 120);
+            $saved = self::syncExchangeState($sid, $mid, 'adopt', true);
+            $actions[] = ['adopt_live' => $set, 'from' => $liveSelected['id'], 'ex_state' => $saved];
         } elseif (!empty($sess['position_side']) && !$paperSelected) {
             // user declined paper — flatten paper at mark (does not touch live)
             $closed = self::closeOpenPositionAtMark($client, $cfg, $sess, 'adopt_skip_paper');
@@ -374,6 +436,81 @@ PROMPT;
         }
 
         return null;
+    }
+
+    /**
+     * Run mcp-lighter/live_ex_state.py (snapshot / save / load / reconcile).
+     *
+     * @param list<string> $extra
+     * @return array<string, mixed>
+     */
+    public static function exState(string $op, array $extra = []): array
+    {
+        $root = dirname(__DIR__, 2);
+        $py = PythonBin::path($root);
+        $script = $root . DIRECTORY_SEPARATOR . 'mcp-lighter' . DIRECTORY_SEPARATOR . 'live_ex_state.py';
+        if (!is_file($py)) {
+            $py = 'python3';
+        }
+        if (!is_file($script)) {
+            return ['ok' => false, 'error' => 'live_ex_state.py missing'];
+        }
+        $args = [escapeshellarg($py), escapeshellarg($script), escapeshellarg($op)];
+        foreach ($extra as $a) {
+            $args[] = escapeshellarg((string) $a);
+        }
+        $cmd = 'PYTHONIOENCODING=utf-8 PYTHONUTF8=1 ' . implode(' ', $args) . ' 2>&1';
+        $out = [];
+        $code = 0;
+        exec($cmd, $out, $code);
+        $text = trim(implode("\n", $out));
+        $decoded = json_decode($text, true);
+        if (!is_array($decoded)) {
+            return ['ok' => false, 'error' => 'ex_state failed code=' . $code . ' out=' . substr($text, 0, 400)];
+        }
+
+        return $decoded;
+    }
+
+    /** Fetch detailed exchange position + orders for UI. */
+    public static function exchangeDetail(int $marketId = 120): array
+    {
+        return self::exState('snapshot', ['--market-id', (string) $marketId]);
+    }
+
+    /**
+     * Persist latest exchange state into live_ex_* tables.
+     *
+     * @return array<string, mixed>
+     */
+    public static function syncExchangeState(?int $sessionId, int $marketId, string $source, bool $adopted = false): array
+    {
+        $extra = ['--market-id', (string) $marketId, '--source', $source];
+        if ($sessionId !== null) {
+            $extra[] = '--session-id';
+            $extra[] = (string) $sessionId;
+        }
+        if ($adopted) {
+            $extra[] = '--adopted';
+        }
+
+        return self::exState('save', $extra);
+    }
+
+    /**
+     * Reconcile DB snapshot vs exchange before acting on a signal.
+     *
+     * @return array<string, mixed>
+     */
+    public static function reconcileExchange(?int $sessionId, int $marketId): array
+    {
+        $extra = ['--market-id', (string) $marketId];
+        if ($sessionId !== null) {
+            $extra[] = '--session-id';
+            $extra[] = (string) $sessionId;
+        }
+
+        return self::exState('reconcile', $extra);
     }
 
     /**
@@ -529,7 +666,18 @@ PROMPT;
      */
     public static function status(IndicatorConfig $cfg, ?int $sessionId = null): array
     {
-        return Live1mStore::status($cfg->dbPath(), $sessionId);
+        $out = Live1mStore::status($cfg->dbPath(), $sessionId);
+        $running = is_array($out['session'] ?? null) && ($out['session']['status'] ?? '') === 'running';
+        $root = dirname(__DIR__, 2);
+        $pidFile = $root . DIRECTORY_SEPARATOR . 'mcp-lighter' . DIRECTORY_SEPARATOR . '_live_1m_loop.pid';
+        $pid = is_file($pidFile) ? (int) trim((string) file_get_contents($pidFile)) : 0;
+        $alive = $pid > 0 && self::isPidAlive($pid);
+        $out['loop'] = [
+            'alive' => $running && $alive,
+            'pid' => $alive ? $pid : null,
+        ];
+
+        return $out;
     }
 
     /**
@@ -544,6 +692,32 @@ PROMPT;
         }
 
         return Live1mStore::setMethod($cfg->dbPath(), $method, $sessionId);
+    }
+
+    /**
+     * Switch signal TF (1m|5m). Keeps current method; next ticks trade on this frame.
+     *
+     * @return array<string, mixed>
+     */
+    public static function setResolution(IndicatorConfig $cfg, string $resolution, ?int $sessionId = null): array
+    {
+        if (!in_array($resolution, self::SIGNAL_TFS, true)) {
+            return ['ok' => false, 'error' => 'resolution not allowed', 'allowed' => self::SIGNAL_TFS];
+        }
+
+        $db = $cfg->dbPath();
+        $wrap = Live1mStore::session($db, $sessionId);
+        $sess = $wrap['session'] ?? null;
+        if (!is_array($sess)) {
+            return ['ok' => false, 'error' => 'no session'];
+        }
+
+        $method = (string) ($sess['method'] ?? 'ROC(10) zero-cross');
+        if (!in_array($method, TechnicalAnalysis::METHODS, true)) {
+            $method = 'ROC(10) zero-cross';
+        }
+
+        return Live1mStore::setLead($db, $method, $resolution, (int) $sess['id']);
     }
 
     /**
@@ -645,6 +819,13 @@ PROMPT;
                 $out['lot_usd'] = $resized['lot_usd'] ?? $out['lot_usd'] ?? null;
                 $out['position_size'] = $resized['position_size'] ?? null;
             }
+        }
+
+        if (!empty($out['ok']) && is_array($sess)) {
+            $sid = $sessionId ?? (int) ($sess['id'] ?? 0);
+            $mid = (int) ($sess['market_id'] ?? 120);
+            $src = $resize ? 'resize' : ($touchTpsl ? 'set_levels' : 'set_levels_lot');
+            $out['ex_state'] = self::syncExchangeState($sid > 0 ? $sid : null, $mid, $src, true);
         }
 
         return $out;
@@ -1050,6 +1231,42 @@ PROMPT;
     }
 
     /**
+     * Exclusive tick lock — prevents browser timer + background loop from
+     * double-opening on the same cross (was causing 2× size on Lighter).
+     *
+     * @return resource|false
+     */
+    private static function acquireTickLock(int $sessionId)
+    {
+        $root = dirname(__DIR__, 2);
+        $path = $root . DIRECTORY_SEPARATOR . 'mcp-lighter' . DIRECTORY_SEPARATOR
+            . '_live_1m_tick_' . $sessionId . '.lock';
+        $fh = @fopen($path, 'c+');
+        if ($fh === false) {
+            return false;
+        }
+        if (!flock($fh, LOCK_EX | LOCK_NB)) {
+            fclose($fh);
+
+            return false;
+        }
+
+        return $fh;
+    }
+
+    /**
+     * @param resource|false $fh
+     */
+    private static function releaseTickLock($fh): void
+    {
+        if ($fh === false || $fh === null) {
+            return;
+        }
+        flock($fh, LOCK_UN);
+        fclose($fh);
+    }
+
+    /**
      * One LIVE tick. Safe to call from UI every ~tick_sec.
      *
      * @return array<string, mixed>
@@ -1059,6 +1276,38 @@ PROMPT;
         $db = $cfg->dbPath();
         $wrap = Live1mStore::session($db, $sessionId);
         $sess = $wrap['session'] ?? null;
+        if (!is_array($sess) || ($sess['status'] ?? '') !== 'running') {
+            return ['ok' => false, 'error' => 'no running emulation session', 'skipped' => true];
+        }
+
+        $sid = (int) $sess['id'];
+        $lock = self::acquireTickLock($sid);
+        if ($lock === false) {
+            return [
+                'ok' => true,
+                'skipped' => true,
+                'reason' => 'tick locked (another worker)',
+                'session_id' => $sid,
+            ];
+        }
+
+        try {
+            return self::tickLocked($client, $cfg, $sess);
+        } finally {
+            self::releaseTickLock($lock);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $sess
+     * @return array<string, mixed>
+     */
+    private static function tickLocked(Client $client, IndicatorConfig $cfg, array $sess): array
+    {
+        // Re-read under lock — peer may have just flipped.
+        $db = $cfg->dbPath();
+        $wrap = Live1mStore::session($db, (int) $sess['id']);
+        $sess = $wrap['session'] ?? $sess;
         if (!is_array($sess) || ($sess['status'] ?? '') !== 'running') {
             return ['ok' => false, 'error' => 'no running emulation session', 'skipped' => true];
         }
@@ -1140,9 +1389,15 @@ PROMPT;
                     $bundle['sig'] = ['c' => $frames[$resolution], 'r' => $resolution];
                 }
             } elseif (!empty($methodPick['error'])) {
+                $err = (string) $methodPick['error'];
+                // Transient DeepSeek drops are expected occasionally; keep method, quiet-ish warn.
+                $soft = str_contains(strtolower($err), 'remote end closed')
+                    || str_contains(strtolower($err), 'timed out')
+                    || str_contains(strtolower($err), 'connection');
                 $logs[] = [
-                    'level' => 'warn',
-                    'message' => 'Flash lead pick failed: ' . $methodPick['error']
+                    'level' => $soft ? 'info' : 'warn',
+                    'message' => ($soft ? 'Flash временно недоступен' : 'Flash lead pick failed')
+                        . ': ' . $err
                         . ' — keep ' . $method . ' @ ' . $resolution,
                 ];
             }
@@ -1274,6 +1529,33 @@ PROMPT;
             $crossLong = $prevMethod <= 0 && $methodSig > 0;
             $crossShort = $prevMethod >= 0 && $methodSig < 0;
             $wideSpread = $spreadBps !== null && $spreadBps > 25.0;
+            $willTrade = !$wideSpread && (($crossLong && $side !== 'long') || ($crossShort && $side !== 'short'));
+            $reconcile = null;
+            if ($willTrade) {
+                $reconcile = self::reconcileExchange((int) $sess['id'], $marketId);
+                if (is_array($reconcile) && empty($reconcile['matched'])) {
+                    $logs[] = [
+                        'level' => 'warn',
+                        'message' => 'сверка с биржей перед сигналом: diffs='
+                            . json_encode($reconcile['diffs'] ?? [], JSON_UNESCAPED_UNICODE),
+                    ];
+                } else {
+                    $logs[] = [
+                        'level' => 'info',
+                        'message' => 'сверка с биржей перед сигналом: OK',
+                    ];
+                }
+                // Prefer live exchange size if adopted position differs
+                $exPos = $reconcile['exchange']['position'] ?? null;
+                if (is_array($exPos) && !empty($exPos['side']) && (float) ($exPos['size'] ?? 0) > 0) {
+                    if ($side && $side === ($exPos['side'] ?? null)) {
+                        $size = (float) $exPos['size'];
+                        if (!empty($exPos['entry_price'])) {
+                            $entry = (float) $exPos['entry_price'];
+                        }
+                    }
+                }
+            }
 
             if ($wideSpread) {
                 $action = 'skip_spread';
@@ -1364,6 +1646,7 @@ PROMPT;
             'action' => $action,
             'reason' => $reason,
             'position_side' => $side,
+            'position_size' => $size,
             'u_pnl' => round($uPnl, 4),
             'session_pnl' => round($sessionPnl, 4),
             'payload' => [
@@ -1375,6 +1658,8 @@ PROMPT;
                 'prev_method_sig' => $prevMethod,
                 'candles' => count($candles),
                 'live' => true,
+                'position_size' => $size,
+                'lot_usd' => $lot,
             ],
         ];
 
@@ -1385,6 +1670,11 @@ PROMPT;
             'logs' => $logs,
         ]);
 
+        $exSync = null;
+        if ($trades !== []) {
+            $exSync = self::syncExchangeState((int) $sess['id'], $marketId, 'after_signal', true);
+        }
+
         return [
             'ok' => (bool) ($saved['ok'] ?? false),
             'skipped' => false,
@@ -1394,6 +1684,7 @@ PROMPT;
             'trades' => $trades,
             'method_pick' => $methodPick,
             'saved' => $saved,
+            'ex_state' => $exSync,
             'error' => $saved['error'] ?? null,
         ];
     }
@@ -1411,14 +1702,15 @@ PROMPT;
             return ['ok' => false, 'error' => 'live_1m_loop.php missing'];
         }
         $php = PHP_BINARY ?: 'php';
+        // `--` required so PHP CLI does not treat --session-id as its own option.
         if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
             $cmd = 'start /B "" ' . escapeshellarg($php) . ' -f ' . escapeshellarg($script)
-                . ' --session-id=' . (int) $sessionId
+                . ' -- --session-id=' . (int) $sessionId
                 . ' >> ' . escapeshellarg($log) . ' 2>&1';
             pclose(popen($cmd, 'r'));
         } else {
             $cmd = escapeshellarg($php) . ' -f ' . escapeshellarg($script)
-                . ' --session-id=' . (int) $sessionId
+                . ' -- --session-id=' . (int) $sessionId
                 . ' >> ' . escapeshellarg($log) . ' 2>&1 &';
             exec($cmd);
         }

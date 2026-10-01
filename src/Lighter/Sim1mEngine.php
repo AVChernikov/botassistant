@@ -150,29 +150,9 @@ PROMPT;
         $candidates = [];
         $wrap = Sim1mStore::session($cfg->dbPath(), $sessionId);
         $sess = $wrap['session'] ?? null;
-        if (is_array($sess) && ($sess['status'] ?? '') === 'running' && !empty($sess['position_side'])) {
-            $candidates[] = [
-                'id' => 'paper:' . (int) $sess['id'],
-                'source' => 'paper',
-                'session_id' => (int) $sess['id'],
-                'market_id' => (int) ($sess['market_id'] ?? 120),
-                'symbol' => (string) ($sess['symbol'] ?? 'LIT'),
-                'side' => (string) $sess['position_side'],
-                'size' => isset($sess['position_size']) ? (float) $sess['position_size'] : null,
-                'entry' => isset($sess['entry_price']) ? (float) $sess['entry_price'] : null,
-                'u_pnl' => null,
-                'label' => sprintf(
-                    'paper #%d · %s %s @ %s',
-                    (int) $sess['id'],
-                    $sess['position_side'],
-                    $sess['symbol'] ?? 'LIT',
-                    $sess['entry_price'] ?? '—',
-                ),
-                'default_checked' => true,
-            ];
-        }
 
         $liveErr = null;
+        $liveByMarket = [];
         try {
             $idx = self::lighterAccountIndex();
             if ($idx !== null) {
@@ -192,6 +172,8 @@ PROMPT;
                             continue;
                         }
                         $size = (float) ($p['position'] ?? 0);
+                        $mid = (int) ($p['market_id'] ?? 0);
+                        $liveByMarket[$mid] = abs($size);
                         if (abs($size) < 1e-12) {
                             continue;
                         }
@@ -200,7 +182,6 @@ PROMPT;
                         if ($side !== 'long' && $side !== 'short') {
                             continue;
                         }
-                        $mid = (int) ($p['market_id'] ?? 0);
                         $sym = (string) ($p['symbol'] ?? ('m' . $mid));
                         $entry = isset($p['avg_entry_price']) ? (float) $p['avg_entry_price'] : null;
                         $candidates[] = [
@@ -212,6 +193,7 @@ PROMPT;
                             'size' => abs($size),
                             'entry' => $entry,
                             'u_pnl' => isset($p['unrealized_pnl']) ? (float) $p['unrealized_pnl'] : null,
+                            'on_exchange' => true,
                             'label' => sprintf(
                                 'live · %s %s size=%s entry=%s uPnL=%s',
                                 $side,
@@ -230,6 +212,32 @@ PROMPT;
             }
         } catch (\Throwable $e) {
             $liveErr = $e->getMessage();
+        }
+
+        if (is_array($sess) && ($sess['status'] ?? '') === 'running' && !empty($sess['position_side'])) {
+            $mid = (int) ($sess['market_id'] ?? 120);
+            $onEx = ($liveByMarket[$mid] ?? 0.0) >= 1e-12;
+            $candidates[] = [
+                'id' => 'paper:' . (int) $sess['id'],
+                'source' => 'paper',
+                'session_id' => (int) $sess['id'],
+                'market_id' => $mid,
+                'symbol' => (string) ($sess['symbol'] ?? 'LIT'),
+                'side' => (string) $sess['position_side'],
+                'size' => isset($sess['position_size']) ? (float) $sess['position_size'] : null,
+                'entry' => isset($sess['entry_price']) ? (float) $sess['entry_price'] : null,
+                'u_pnl' => null,
+                'on_exchange' => $onEx,
+                'label' => sprintf(
+                    'paper #%d · %s %s @ %s%s',
+                    (int) $sess['id'],
+                    $sess['position_side'],
+                    $sess['symbol'] ?? 'LIT',
+                    $sess['entry_price'] ?? '—',
+                    $onEx ? '' : ' · нет на Lighter',
+                ),
+                'default_checked' => $onEx,
+            ];
         }
 
         return [
@@ -1139,14 +1147,15 @@ PROMPT;
             return ['ok' => false, 'error' => 'sim_1m_loop.php missing'];
         }
         $php = PHP_BINARY ?: 'php';
+        // `--` required so PHP CLI does not treat --session-id as its own option.
         if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
             $cmd = 'start /B "" ' . escapeshellarg($php) . ' -f ' . escapeshellarg($script)
-                . ' --session-id=' . (int) $sessionId
+                . ' -- --session-id=' . (int) $sessionId
                 . ' >> ' . escapeshellarg($log) . ' 2>&1';
             pclose(popen($cmd, 'r'));
         } else {
             $cmd = escapeshellarg($php) . ' -f ' . escapeshellarg($script)
-                . ' --session-id=' . (int) $sessionId
+                . ' -- --session-id=' . (int) $sessionId
                 . ' >> ' . escapeshellarg($log) . ' 2>&1 &';
             exec($cmd);
         }

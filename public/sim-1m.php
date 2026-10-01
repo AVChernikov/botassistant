@@ -286,8 +286,8 @@ declare(strict_types=1);
     const SET_LEVELS_ACTION = 'sim_1m_set_levels';
     const LS_KEY = 'sim_1m_levels';
     const LOT_OPTS = [50, 100, 150, 200, 250, 300, 350, 400];
-    const SL_OPTS = [1, 2, 3, 5, 10, 15, 20, 25, 30];
-    const TP_OPTS = [1, 2, 3, 5, 10, 15, 20, 25, 30];
+    const SL_OPTS = [0.5, 1, 2, 3, 5, 10, 15, 20, 25, 30];
+    const TP_OPTS = [0.5, 1, 2, 3, 5, 10, 15, 20, 25, 30];
     let sessionId = null;
     try {
       const saved = localStorage.getItem('sim_1m_session_id');

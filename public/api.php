@@ -636,6 +636,7 @@ try {
                 'lot_usd' => (float) ($_GET['lot_usd'] ?? $_POST['lot_usd'] ?? 200),
                 'tick_sec' => (int) ($_GET['tick_sec'] ?? $_POST['tick_sec'] ?? 30),
                 'method' => (string) ($_GET['method'] ?? $_POST['method'] ?? 'ROC(10) zero-cross'),
+                'resolution' => (string) ($_GET['resolution'] ?? $_POST['resolution'] ?? '1m'),
                 'tp_levels' => json_decode((string) ($_GET['tp_levels'] ?? $_POST['tp_levels'] ?? '[50]'), true) ?: [50],
                 'sl_levels' => json_decode((string) ($_GET['sl_levels'] ?? $_POST['sl_levels'] ?? '[30]'), true) ?: [30],
             ];
@@ -657,6 +658,22 @@ try {
             $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
             $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
             jsonOut(Live1mEngine::candidatePositions($simClient, $cfg, $sid === false ? null : $sid));
+
+        case 'live_1m_exchange':
+            $mid = filter_var($_GET['market_id'] ?? $_POST['market_id'] ?? 120, FILTER_VALIDATE_INT);
+            jsonOut(Live1mEngine::exchangeDetail($mid === false ? 120 : $mid));
+
+        case 'live_1m_ex_sync':
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            $mid = filter_var($_GET['market_id'] ?? $_POST['market_id'] ?? 120, FILTER_VALIDATE_INT);
+            $adopted = filter_var($_GET['adopted'] ?? $_POST['adopted'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            $source = (string) ($_GET['source'] ?? $_POST['source'] ?? 'manual');
+            jsonOut(Live1mEngine::syncExchangeState(
+                $sid === false ? null : $sid,
+                $mid === false ? 120 : $mid,
+                $source,
+                $adopted,
+            ));
 
         case 'live_1m_adopt':
             $cfg = IndicatorConfig::load();
@@ -696,6 +713,13 @@ try {
             $out = Live1mEngine::setMethod($cfg, $method, $sid === false ? null : $sid);
             jsonOut($out, !empty($out['ok']) ? 200 : 400);
 
+        case 'live_1m_set_resolution':
+            $cfg = IndicatorConfig::load();
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            $resolution = (string) ($_GET['resolution'] ?? $_POST['resolution'] ?? '');
+            $out = Live1mEngine::setResolution($cfg, $resolution, $sid === false ? null : $sid);
+            jsonOut($out, !empty($out['ok']) ? 200 : 400);
+
         case 'live_1m_set_levels':
             $cfg = IndicatorConfig::load();
             $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
@@ -718,7 +742,7 @@ try {
         default:
             jsonOut([
                 'ok' => false,
-                'error' => 'Unknown action. Use …|sim_1m_*|live_1m_start|live_1m_stop|live_1m_resume|live_1m_candidates|live_1m_adopt|live_1m_tick|live_1m_status|live_1m_set_method|live_1m_set_levels|sim_1m_set_levels',
+                'error' => 'Unknown action. Use …|sim_1m_*|live_1m_start|live_1m_stop|live_1m_resume|live_1m_candidates|live_1m_adopt|live_1m_tick|live_1m_status|live_1m_set_method|live_1m_set_resolution|live_1m_set_levels|sim_1m_set_levels',
             ], 400);
     }
 } catch (ApiException $e) {

@@ -4,9 +4,26 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# Transient network / gateway failures worth retrying.
+_RETRY_MARKERS = (
+    "remote end closed connection",
+    "connection reset",
+    "connection aborted",
+    "timed out",
+    "temporarily unavailable",
+    "broken pipe",
+    "eof occurred",
+    "ssl",
+    "503",
+    "502",
+    "504",
+    "429",
+)
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -20,6 +37,27 @@ def load_env(path: Path) -> dict[str, str]:
         k, v = line.split("=", 1)
         out[k.strip()] = v.strip()
     return out
+
+
+def _transient(err: str) -> bool:
+    low = err.lower()
+    return any(m in low for m in _RETRY_MARKERS)
+
+
+def _post(url: str, body: dict, key: str, timeout: float) -> dict:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Connection": "close",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
 def main() -> int:
@@ -48,27 +86,40 @@ def main() -> int:
     if data.get("thinking") is False or data.get("disable_thinking"):
         body["thinking"] = {"type": "disabled"}
 
-    req = urllib.request.Request(
-        base + "/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")[:800]
-        result = {"ok": False, "error": f"HTTP {e.code}: {err_body}"}
-        out_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
-        print(json.dumps(result, ensure_ascii=False))
-        return 1
-    except Exception as e:
-        result = {"ok": False, "error": str(e)}
+    url = base + "/chat/completions"
+    # Flash lead-pick is short; keep timeout moderate and retry on drop.
+    timeout = float(data.get("timeout") or env.get("DEEPSEEK_TIMEOUT") or 60)
+    retries = int(data.get("retries") or env.get("DEEPSEEK_RETRIES") or 3)
+    retries = max(1, min(retries, 5))
+
+    raw = None
+    last_err = ""
+    for attempt in range(1, retries + 1):
+        try:
+            raw = _post(url, body, key, timeout)
+            break
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")[:800]
+            last_err = f"HTTP {e.code}: {err_body}"
+            if e.code in (429, 502, 503, 504) and attempt < retries:
+                time.sleep(min(8.0, 0.8 * (2 ** (attempt - 1))))
+                continue
+            result = {"ok": False, "error": last_err, "attempts": attempt}
+            out_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+            print(json.dumps(result, ensure_ascii=False))
+            return 1
+        except Exception as e:
+            last_err = str(e)
+            if _transient(last_err) and attempt < retries:
+                time.sleep(min(8.0, 0.8 * (2 ** (attempt - 1))))
+                continue
+            result = {"ok": False, "error": last_err, "attempts": attempt}
+            out_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+            print(json.dumps(result, ensure_ascii=False))
+            return 1
+
+    if raw is None:
+        result = {"ok": False, "error": last_err or "empty response", "attempts": retries}
         out_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         print(json.dumps(result, ensure_ascii=False))
         return 1

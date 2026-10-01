@@ -236,25 +236,25 @@
     el.classList.toggle('error', !!isError);
   }
 
-  function setLeadTitle(method) {
+  function setLeadTitle(method, resolution) {
     const el = $('simChartMethod');
     if (!el) return;
-    el.textContent = (method || DEFAULTS.method) + ' · 1m';
+    const res = resolution || state.resolution || DEFAULTS.resolution;
+    el.textContent = (method || DEFAULTS.method) + ' · ' + res;
   }
 
-  function setLead(method, _resolution, opts = {}) {
+  function setLead(method, resolution, opts = {}) {
     if (!method) return;
     const force = !!opts.force;
-    // Charts always 1m — ignore any other TF from session/Flash.
-    const res = '1m';
+    const res = resolution || state.resolution || DEFAULTS.resolution;
     if (!force && method === state.method && state.resolution === res) {
-      setLeadTitle(method);
+      setLeadTitle(method, res);
       return;
     }
     const changed = method !== state.method || state.resolution !== res;
     state.method = method;
     state.resolution = res;
-    setLeadTitle(method);
+    setLeadTitle(method, res);
     if (changed || force) {
       if (state.loading) {
         state.pending = { method, resolution: res };
@@ -266,23 +266,26 @@
 
   /** @deprecated use setLead */
   function setMethod(method, opts = {}) {
-    setLead(method, '1m', opts);
+    setLead(method, state.resolution || DEFAULTS.resolution, opts);
   }
 
   async function load(opts = {}) {
     if (state.loading) {
-      if (opts.method) {
-        state.pending = { method: opts.method || state.method, resolution: '1m' };
+      if (opts.method || opts.resolution) {
+        state.pending = {
+          method: opts.method || state.method,
+          resolution: opts.resolution || state.resolution,
+        };
       }
       return;
     }
     const method = opts.method || state.method || DEFAULTS.method;
-    const resolution = '1m';
+    const resolution = opts.resolution || state.resolution || DEFAULTS.resolution;
     state.method = method;
     state.resolution = resolution;
     state.loading = true;
-    setLeadTitle(method);
-    setMeta('загрузка 1m…');
+    setLeadTitle(method, resolution);
+    setMeta('загрузка ' + resolution + '…');
     try {
       const q = new URLSearchParams({
         action: 'live',
@@ -296,7 +299,7 @@
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
 
-      if (state.method !== method) {
+      if (state.method !== method || state.resolution !== resolution) {
         return;
       }
 
@@ -311,7 +314,7 @@
 
       const last = candles[candles.length - 1];
       const px = last ? fmt(last.c, 4) : '—';
-      setMeta(`1m · ${method} · px ${px} · bars ${candles.length} · ${new Date().toLocaleTimeString('ru-RU')}`);
+      setMeta(`${resolution} · ${method} · px ${px} · bars ${candles.length} · ${new Date().toLocaleTimeString('ru-RU')}`);
     } catch (e) {
       setMeta(String(e.message || e), true);
     } finally {
@@ -319,8 +322,8 @@
       if (state.pending) {
         const next = state.pending;
         state.pending = null;
-        if (next.method !== state.method) {
-          setLead(next.method, '1m', { force: true });
+        if (next.method !== state.method || next.resolution !== state.resolution) {
+          setLead(next.method, next.resolution, { force: true });
         }
       }
     }
@@ -328,12 +331,21 @@
 
   function start(opts = {}) {
     if (opts.method) state.method = opts.method;
-    state.resolution = '1m';
-    load({ method: state.method, marketId: opts.marketId, candleCount: opts.candleCount, visible: opts.visible });
+    if (opts.resolution) state.resolution = opts.resolution;
+    load({
+      method: state.method,
+      resolution: state.resolution,
+      marketId: opts.marketId,
+      candleCount: opts.candleCount,
+      visible: opts.visible,
+    });
     if (state.timer) clearInterval(state.timer);
     const sec = Math.max(15, Number(opts.refreshSec || 30));
-    state.timer = setInterval(() => load({ method: state.method }), sec * 1000);
-    window.addEventListener('resize', () => load({ method: state.method }));
+    state.timer = setInterval(
+      () => load({ method: state.method, resolution: state.resolution }),
+      sec * 1000,
+    );
+    window.addEventListener('resize', () => load({ method: state.method, resolution: state.resolution }));
   }
 
   function currentMethod() {

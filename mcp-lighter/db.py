@@ -317,6 +317,53 @@ CREATE TABLE IF NOT EXISTS live_1m_logs (
     message TEXT NOT NULL,
     KEY idx_live1m_logs_sess (session_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS live_ex_state (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    account_index BIGINT NOT NULL,
+    market_id INT NOT NULL,
+    session_id BIGINT NULL,
+    symbol VARCHAR(64) NULL,
+    side VARCHAR(8) NULL,
+    size DOUBLE NULL,
+    entry_price DOUBLE NULL,
+    position_value DOUBLE NULL,
+    unrealized_pnl DOUBLE NULL,
+    lot_usd DOUBLE NULL,
+    mark_price DOUBLE NULL,
+    liquidation_price DOUBLE NULL,
+    open_order_count INT NULL,
+    adopted TINYINT NOT NULL DEFAULT 0,
+    source VARCHAR(32) NOT NULL DEFAULT 'sync',
+    raw_json MEDIUMTEXT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE KEY uq_live_ex_state (account_index, market_id),
+    KEY idx_live_ex_state_sess (session_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS live_ex_orders (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    account_index BIGINT NOT NULL,
+    market_id INT NOT NULL,
+    session_id BIGINT NULL,
+    order_index BIGINT NOT NULL,
+    client_order_index BIGINT NULL,
+    order_type VARCHAR(64) NULL,
+    is_ask TINYINT NULL,
+    side VARCHAR(8) NULL,
+    size DOUBLE NULL,
+    remaining_size DOUBLE NULL,
+    price DOUBLE NULL,
+    trigger_price DOUBLE NULL,
+    reduce_only TINYINT NULL,
+    status VARCHAR(32) NULL,
+    lot_usd DOUBLE NULL,
+    raw_json MEDIUMTEXT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE KEY uq_live_ex_ord (account_index, market_id, order_index),
+    KEY idx_live_ex_ord_mkt (account_index, market_id),
+    KEY idx_live_ex_ord_sess (session_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
 _SIGNAL_RE = re.compile(r"(?<![`\w])signal(?![`\w])", re.IGNORECASE)
