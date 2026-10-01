@@ -24,11 +24,31 @@ final class Live1mEngine
         return $realized + $uPnl;
     }
 
+    /**
+     * Last non-zero impulse in signals[0..$upto] — current regime after zero-cross methods.
+     *
+     * @param list<int|float|null> $signals
+     */
+    private static function lastNonZeroSignal(array $signals, int $upto): int
+    {
+        $upto = min($upto, count($signals) - 1);
+        for ($j = $upto; $j >= 0; $j--) {
+            $s = (int) ($signals[$j] ?? 0);
+            if ($s !== 0) {
+                return $s > 0 ? 1 : -1;
+            }
+        }
+
+        return 0;
+    }
+
     private const METHOD_PICK_PROMPT = <<<'PROMPT'
-Ты DeepSeek Flash. Выбери ОДИН ведущий метод и таймфрейм для LIVE-сигналов LIT.
+Ты DeepSeek Flash. Выбери ОДИН ведущий метод для LIVE-сигналов LIT на ТЕКУЩЕМ таймфрейме (current.resolution).
+Также можешь рекомендовать другой ТФ — это только совет, ТФ меняет только пользователь.
 Ответь СТРОГО JSON без markdown:
 {"method":"ROC(10) zero-cross","resolution":"5m","why":"кратко почему","confidence":0.0}
-method — только из candidates.methods; resolution — только "1m" или "5m" из candidates.resolutions.
+method — только из candidates.methods (будет применён).
+resolution — рекомендуемый ТФ "1m" или "5m" (только совет в лог; текущий ТФ не меняется).
 PROMPT;
 
     /**
@@ -1371,20 +1391,27 @@ PROMPT;
             $methodPick = self::pickLeadWithFlash($cfg->dbPath(), $marketId, $frames, $method, $resolution);
             if (!empty($methodPick['ok']) && !empty($methodPick['method'])) {
                 $pickedMethod = (string) $methodPick['method'];
-                $pickedTf = (string) ($methodPick['resolution'] ?? $resolution);
-                if (!in_array($pickedTf, self::SIGNAL_TFS, true)) {
-                    $pickedTf = $resolution;
+                $adviseTf = (string) ($methodPick['resolution'] ?? '');
+                if (!in_array($adviseTf, self::SIGNAL_TFS, true)) {
+                    $adviseTf = '';
                 }
-                $changed = ($pickedMethod !== $method) || ($pickedTf !== $resolution);
-                Live1mStore::setLead($db, $pickedMethod, $pickedTf, (int) $sess['id']);
-                $method = $pickedMethod;
-                $resolution = $pickedTf;
-                $logs[] = [
-                    'level' => 'info',
-                    'message' => ($changed ? 'DeepSeek Flash выбрал' : 'DeepSeek Flash подтвердил')
-                        . ': ' . $method . ' @ ' . $resolution
-                        . (!empty($methodPick['why']) ? (' — ' . $methodPick['why']) : ''),
-                ];
+                // TF is user-controlled only; Flash may change method, TF advice goes to log.
+                $changed = $pickedMethod !== $method;
+                if ($changed) {
+                    Live1mStore::setLead($db, $pickedMethod, $resolution, (int) $sess['id']);
+                    $method = $pickedMethod;
+                }
+                $msg = ($changed ? 'DeepSeek Flash выбрал метод' : 'DeepSeek Flash подтвердил метод')
+                    . ': ' . $method . ' @ ' . $resolution;
+                if ($adviseTf !== '' && $adviseTf !== $resolution) {
+                    $msg .= ' · совет ТФ: ' . $adviseTf . ' (не применён — меняет только пользователь)';
+                } elseif ($adviseTf === $resolution) {
+                    $msg .= ' · ТФ ок';
+                }
+                if (!empty($methodPick['why'])) {
+                    $msg .= ' — ' . $methodPick['why'];
+                }
+                $logs[] = ['level' => 'info', 'message' => $msg];
                 if (isset($frames[$resolution])) {
                     $bundle['sig'] = ['c' => $frames[$resolution], 'r' => $resolution];
                 }
@@ -1429,8 +1456,11 @@ PROMPT;
         $prev = $n - 2;
         $rocSig = (int) ($roc[$i] ?? 0);
         $smaSig = (int) ($sma[$i] ?? 0);
-        $methodSig = (int) ($meth[$i] ?? 0);
-        $prevMethod = (int) ($meth[$prev] ?? 0);
+        // Methods emit impulse ±1 only on the cross bar, then 0. Live polls every ~30s and
+        // can miss that bar — use last non-zero (current regime) so we still align.
+        $methodSig = self::lastNonZeroSignal($meth, $i);
+        $prevMethod = self::lastNonZeroSignal($meth, $prev);
+        $impulseSig = (int) ($meth[$i] ?? 0);
 
         $last = $candles[$i];
         $price = (float) ($last['c'] ?? 0);
@@ -1524,12 +1554,17 @@ PROMPT;
             }
         }
 
-        // Signal cross on method (only if still flat or need flip / hold)
+        // Follow regime from last zero-cross (not only impulse on the current bar).
         if ($status === 'running' && $action === 'hold') {
-            $crossLong = $prevMethod <= 0 && $methodSig > 0;
-            $crossShort = $prevMethod >= 0 && $methodSig < 0;
+            $crossLong = $methodSig > 0 && $side !== 'long';
+            $crossShort = $methodSig < 0 && $side !== 'short';
+            // Prefer fresh impulse when regime unchanged but bar just crossed (flat→entry).
+            if (!$crossLong && !$crossShort) {
+                $crossLong = $prevMethod <= 0 && $impulseSig > 0 && $side !== 'long';
+                $crossShort = $prevMethod >= 0 && $impulseSig < 0 && $side !== 'short';
+            }
             $wideSpread = $spreadBps !== null && $spreadBps > 25.0;
-            $willTrade = !$wideSpread && (($crossLong && $side !== 'long') || ($crossShort && $side !== 'short'));
+            $willTrade = !$wideSpread && ($crossLong || $crossShort);
             $reconcile = null;
             if ($willTrade) {
                 $reconcile = self::reconcileExchange((int) $sess['id'], $marketId);
@@ -1600,7 +1635,13 @@ PROMPT;
                 }
             } else {
                 $action = $side ? 'hold_pos' : 'flat';
-                $reason = $side ? 'in position, no exit' : 'no new cross';
+                if ($side) {
+                    $reason = $methodSig === 0
+                        ? 'in position, no regime yet'
+                        : ('in position, regime ' . ($methodSig > 0 ? '+1' : '-1'));
+                } else {
+                    $reason = $methodSig === 0 ? 'no regime / no cross' : 'no new cross';
+                }
             }
         }
 
@@ -1656,6 +1697,7 @@ PROMPT;
                 'method_source' => 'deepseek-flash',
                 'method_pick' => $methodPick,
                 'prev_method_sig' => $prevMethod,
+                'impulse_sig' => $impulseSig,
                 'candles' => count($candles),
                 'live' => true,
                 'position_size' => $size,
@@ -1837,8 +1879,9 @@ PROMPT;
             if (!in_array($method, TechnicalAnalysis::METHODS, true)) {
                 return ['ok' => false, 'error' => 'flash method not allowed: ' . $method, 'raw' => $parsed];
             }
+            // Recommended TF only (user switches TF in UI); invalid/missing → no advice.
             if (!in_array($resolution, self::SIGNAL_TFS, true)) {
-                return ['ok' => false, 'error' => 'flash resolution not allowed: ' . $resolution, 'raw' => $parsed];
+                $resolution = '';
             }
 
             return [

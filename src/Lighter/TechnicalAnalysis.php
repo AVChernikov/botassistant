@@ -26,6 +26,11 @@ final class TechnicalAnalysis
         'Bollinger(20,2) width',
     ];
 
+    /** ROC hysteresis: ignore wiggles inside ±this % until a real break. */
+    public const ROC_ZERO_EPS_MIN = 0.20;
+    /** Deadzone = max(min, this × median |series|). */
+    public const ZERO_EPS_FRAC = 0.25;
+
     public static function isKnownMethod(string $method): bool
     {
         return in_array($method, self::METHODS, true)
@@ -500,57 +505,45 @@ final class TechnicalAnalysis
         $bb = self::bollinger($closes, 20, 2.0);
         $roc = self::roc($closes, 10);
 
-        $macdSig = array_fill(0, $n, 0);
-        $rsiSig = array_fill(0, $n, 0);
-        $smaSig = array_fill(0, $n, 0);
-        $emaSig = array_fill(0, $n, 0);
-        $bbSig = array_fill(0, $n, 0);
-        $rocSig = array_fill(0, $n, 0);
-        $momSig = array_fill(0, $n, 0);
-
-        for ($i = 1; $i < $n; $i++) {
-            // MACD cross
-            if ($macd['macd'][$i] !== null && $macd['signal'][$i] !== null
-                && $macd['macd'][$i - 1] !== null && $macd['signal'][$i - 1] !== null) {
-                $prev = $macd['macd'][$i - 1] - $macd['signal'][$i - 1];
-                $curr = $macd['macd'][$i] - $macd['signal'][$i];
-                if ($prev <= 0 && $curr > 0) {
-                    $macdSig[$i] = 1;
-                } elseif ($prev >= 0 && $curr < 0) {
-                    $macdSig[$i] = -1;
-                }
+        $macdHist = array_fill(0, $n, null);
+        for ($i = 0; $i < $n; $i++) {
+            if ($macd['macd'][$i] !== null && $macd['signal'][$i] !== null) {
+                $macdHist[$i] = (float) $macd['macd'][$i] - (float) $macd['signal'][$i];
             }
+        }
+        $smaDiff = array_fill(0, $n, null);
+        $emaDiff = array_fill(0, $n, null);
+        $mom = array_fill(0, $n, null);
+        $lastPx = (float) ($closes[$n - 1] ?? 0);
+        $pxEps = $lastPx > 0 ? $lastPx * 0.0005 : 0.0; // 0.05% of price
+        for ($i = 0; $i < $n; $i++) {
+            if ($smaFast[$i] !== null && $smaSlow[$i] !== null) {
+                $smaDiff[$i] = (float) $smaFast[$i] - (float) $smaSlow[$i];
+            }
+            if ($emaFast[$i] !== null && $emaSlow[$i] !== null) {
+                $emaDiff[$i] = (float) $emaFast[$i] - (float) $emaSlow[$i];
+            }
+            if ($i >= 10) {
+                $mom[$i] = $closes[$i] - $closes[$i - 10];
+            }
+        }
 
+        $rocEps = self::seriesDeadzone($roc, self::ROC_ZERO_EPS_MIN);
+        $macdSig = self::hysteresisZeroSignals($macdHist, self::seriesDeadzone($macdHist, $pxEps));
+        $smaSig = self::hysteresisZeroSignals($smaDiff, self::seriesDeadzone($smaDiff, $pxEps));
+        $emaSig = self::hysteresisZeroSignals($emaDiff, self::seriesDeadzone($emaDiff, $pxEps));
+        $rocSig = self::hysteresisZeroSignals($roc, $rocEps);
+        $momSig = self::hysteresisZeroSignals($mom, self::seriesDeadzone($mom, $pxEps));
+
+        $rsiSig = array_fill(0, $n, 0);
+        $bbSig = array_fill(0, $n, 0);
+        for ($i = 1; $i < $n; $i++) {
             // RSI mean reversion
             if ($rsi[$i] !== null && $rsi[$i - 1] !== null) {
                 if ($rsi[$i - 1] < 30 && $rsi[$i] >= 30) {
                     $rsiSig[$i] = 1;
                 } elseif ($rsi[$i - 1] > 70 && $rsi[$i] <= 70) {
                     $rsiSig[$i] = -1;
-                }
-            }
-
-            // SMA 10/30 cross
-            if ($smaFast[$i] !== null && $smaSlow[$i] !== null
-                && $smaFast[$i - 1] !== null && $smaSlow[$i - 1] !== null) {
-                $prev = $smaFast[$i - 1] - $smaSlow[$i - 1];
-                $curr = $smaFast[$i] - $smaSlow[$i];
-                if ($prev <= 0 && $curr > 0) {
-                    $smaSig[$i] = 1;
-                } elseif ($prev >= 0 && $curr < 0) {
-                    $smaSig[$i] = -1;
-                }
-            }
-
-            // EMA 12/26 cross
-            if ($emaFast[$i] !== null && $emaSlow[$i] !== null
-                && $emaFast[$i - 1] !== null && $emaSlow[$i - 1] !== null) {
-                $prev = $emaFast[$i - 1] - $emaSlow[$i - 1];
-                $curr = $emaFast[$i] - $emaSlow[$i];
-                if ($prev <= 0 && $curr > 0) {
-                    $emaSig[$i] = 1;
-                } elseif ($prev >= 0 && $curr < 0) {
-                    $emaSig[$i] = -1;
                 }
             }
 
@@ -561,26 +554,6 @@ final class TechnicalAnalysis
                     $bbSig[$i] = 1;
                 } elseif ($closes[$i - 1] >= $bb['upper'][$i - 1] && $closes[$i] < $bb['upper'][$i]) {
                     $bbSig[$i] = -1;
-                }
-            }
-
-            // ROC zero cross
-            if ($roc[$i] !== null && $roc[$i - 1] !== null) {
-                if ($roc[$i - 1] <= 0 && $roc[$i] > 0) {
-                    $rocSig[$i] = 1;
-                } elseif ($roc[$i - 1] >= 0 && $roc[$i] < 0) {
-                    $rocSig[$i] = -1;
-                }
-            }
-
-            // Momentum: close vs close N bars ago
-            if ($i >= 11) {
-                $diffPrev = $closes[$i - 1] - $closes[$i - 11];
-                $diffCurr = $closes[$i] - $closes[$i - 10];
-                if ($diffPrev <= 0 && $diffCurr > 0) {
-                    $momSig[$i] = 1;
-                } elseif ($diffPrev >= 0 && $diffCurr < 0) {
-                    $momSig[$i] = -1;
                 }
             }
         }
@@ -594,6 +567,62 @@ final class TechnicalAnalysis
             'ROC(10) zero-cross' => $rocSig,
             'Momentum(10) flip' => $momSig,
         ];
+    }
+
+    /**
+     * Deadzone around zero: max(minEps, frac × median |values|).
+     *
+     * @param list<float|null> $values
+     */
+    public static function seriesDeadzone(array $values, float $minEps, float $frac = self::ZERO_EPS_FRAC): float
+    {
+        $abs = [];
+        foreach ($values as $v) {
+            if ($v === null) {
+                continue;
+            }
+            $abs[] = abs((float) $v);
+        }
+        if (count($abs) < 8) {
+            return max(0.0, $minEps);
+        }
+        sort($abs);
+        $med = $abs[(int) floor(count($abs) / 2)];
+
+        return max($minEps, $med * $frac);
+    }
+
+    /**
+     * Schmitt trigger around zero: no new ±1 while |value| ≤ eps.
+     * Regime stays until the series breaks the opposite band.
+     *
+     * @param list<float|null> $values
+     * @return list<int>
+     */
+    public static function hysteresisZeroSignals(array $values, float $eps): array
+    {
+        $n = count($values);
+        $sig = array_fill(0, $n, 0);
+        $regime = 0;
+        $eps = max(0.0, $eps);
+        for ($i = 0; $i < $n; $i++) {
+            if ($values[$i] === null) {
+                continue;
+            }
+            $v = (float) $values[$i];
+            $next = $regime;
+            if ($v > $eps) {
+                $next = 1;
+            } elseif ($v < -$eps) {
+                $next = -1;
+            }
+            if ($next !== 0 && $next !== $regime) {
+                $sig[$i] = $next;
+                $regime = $next;
+            }
+        }
+
+        return $sig;
     }
 
     /**
@@ -647,12 +676,16 @@ final class TechnicalAnalysis
                     ],
                 ];
             })(),
-            'ROC(10) zero-cross' => [
-                'lines' => [
-                    ['name' => 'ROC10', 'color' => '#1f4b7a', 'values' => self::roc($closes, 10)],
-                ],
-                'levels' => [0.0],
-            ],
+            'ROC(10) zero-cross' => (static function () use ($closes): array {
+                $roc = self::roc($closes, 10);
+                $eps = self::seriesDeadzone($roc, self::ROC_ZERO_EPS_MIN);
+                return [
+                    'lines' => [
+                        ['name' => 'ROC10', 'color' => '#1f4b7a', 'values' => $roc],
+                    ],
+                    'levels' => [0.0, $eps, -$eps],
+                ];
+            })(),
             'Momentum(10) flip' => (static function () use ($closes): array {
                 $n = count($closes);
                 $mom = array_fill(0, $n, null);

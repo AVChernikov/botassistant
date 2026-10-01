@@ -203,7 +203,7 @@
     <header>
       <div>
         <div class="brand">live <span>LIT</span></div>
-        <p class="subtitle">LIVE сессия 30с: стакан + сигнал по выбранному ТФ (1m/5m); Flash раз в ~5 мин может сменить метод и ТФ. Эмуляция: <a href="sim-1m.php" style="color:var(--accent);font-weight:600;text-decoration:none">sim-1m</a>.</p>
+        <p class="subtitle">LIVE сессия 30с: стакан + сигнал по выбранному ТФ (1m/5m). ТФ меняете только вы; Flash выбирает метод и может посоветовать ТФ в логе. Эмуляция: <a href="sim-1m.php" style="color:var(--accent);font-weight:600;text-decoration:none">sim-1m</a>.</p>
       </div>
       <div class="nav">
         <a href="index.php">← index</a>
@@ -238,7 +238,7 @@
         </div>
         <p class="levels-hint">Radio лота — на <b>следующую</b> сделку. Кнопка «лот → поз.» — добор/сокращение <b>текущей</b> позиции до выбранного лота по mark. SL/TP → меняют текущие уровни.</p>
       </div>
-      <p class="chart-sub">График = выбранный ТФ; метод — Flash (или текущий). Переключатель сразу меняет сигнал/сделки.</p>
+      <p class="chart-sub">График = выбранный ТФ (только вручную). Flash меняет метод; совет по ТФ — в логе.</p>
     </div>
 
     <div class="section-label">официально с Lighter</div>
