@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Схема проекта · botassistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #eef2ef;
+      --bg-2: #e4ebe5;
+      --ink: #152019;
+      --muted: #5c6b61;
+      --line: #c7d2cb;
+      --panel: rgba(255, 255, 255, 0.82);
+      --accent: #0f6b4c;
+      --accent-2: #c45c26;
+      --blue: #1f5f8b;
+      --violet: #5a4a7a;
+      --shadow: 0 18px 50px rgba(21, 32, 25, 0.08);
+      --radius: 16px;
+      --mono: "IBM Plex Mono", ui-monospace, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: Manrope, sans-serif;
+      background:
+        radial-gradient(1100px 520px at 8% -10%, #d9ebe0 0%, transparent 55%),
+        radial-gradient(900px 480px at 100% 0%, #f3e2d4 0%, transparent 50%),
+        linear-gradient(180deg, var(--bg), var(--bg-2));
+    }
+    .wrap { width: min(1100px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 3.5rem; }
+    header { margin-bottom: 1.75rem; }
+    .brand { font-size: clamp(1.7rem, 3.5vw, 2.4rem); font-weight: 700; letter-spacing: -0.04em; line-height: 1.05; }
+    .brand span { color: var(--accent); }
+    .subtitle { margin: .5rem 0 0; color: var(--muted); max-width: 40rem; font-size: .98rem; }
+    .nav { margin-top: .55rem; display: flex; flex-wrap: wrap; gap: .65rem; font-size: .92rem; }
+    .nav a { color: var(--accent); font-weight: 600; text-decoration: none; }
+    .nav a:hover { text-decoration: underline; }
+
+    .legend {
+      display: flex; flex-wrap: wrap; gap: .6rem 1rem;
+      margin: 0 0 1.25rem; padding: .85rem 1rem;
+      background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+      box-shadow: var(--shadow); font-size: .85rem; color: var(--muted);
+    }
+    .legend i {
+      display: inline-block; width: .75rem; height: .75rem; border-radius: 3px;
+      margin-right: .35rem; vertical-align: -1px;
+    }
+    .lg-web { background: var(--accent); }
+    .lg-php { background: var(--blue); }
+    .lg-py { background: var(--accent-2); }
+    .lg-ext { background: var(--violet); }
+    .lg-data { background: #6b7c70; }
+
+    .flow {
+      display: grid;
+      gap: 1rem;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: .85rem;
+      align-items: stretch;
+    }
+    .band {
+      margin-top: .35rem;
+      font-family: var(--mono);
+      font-size: .72rem;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .node {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: .95rem 1rem;
+      box-shadow: var(--shadow);
+      position: relative;
+    }
+    .node h3 {
+      margin: 0 0 .35rem;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .node p { margin: 0; color: var(--muted); font-size: .86rem; line-height: 1.45; }
+    .node code {
+      font-family: var(--mono);
+      font-size: .74rem;
+      background: rgba(15, 107, 76, 0.08);
+      padding: .1rem .35rem;
+      border-radius: 4px;
+      color: var(--ink);
+    }
+    .tag {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: .68rem;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      padding: .15rem .4rem;
+      border-radius: 4px;
+      margin-bottom: .45rem;
+      color: #fff;
+    }
+    .t-web { background: var(--accent); }
+    .t-php { background: var(--blue); }
+    .t-py { background: var(--accent-2); }
+    .t-ext { background: var(--violet); }
+    .t-data { background: #6b7c70; }
+
+    .arrow {
+      text-align: center;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: .8rem;
+      letter-spacing: .08em;
+      padding: .15rem 0;
+    }
+
+    .pipes {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: .75rem;
+      margin-top: .25rem;
+    }
+    .pipe {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: .75rem;
+      align-items: start;
+      padding: .85rem 1rem;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .pipe .when {
+      font-family: var(--mono);
+      font-size: .78rem;
+      color: var(--accent);
+      font-weight: 500;
+    }
+    .pipe .what { font-size: .9rem; color: var(--ink); line-height: 1.4; }
+    .pipe .what span { color: var(--muted); font-size: .84rem; }
+
+    details {
+      margin-top: 1.25rem;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 1rem 1.1rem;
+    }
+    details summary {
+      cursor: pointer;
+      font-weight: 600;
+      list-style: none;
+    }
+    details summary::-webkit-details-marker { display: none; }
+    details ul {
+      margin: .75rem 0 0;
+      padding-left: 1.1rem;
+      color: var(--muted);
+      font-size: .9rem;
+      line-height: 1.55;
+    }
+    details code { font-family: var(--mono); font-size: .8rem; color: var(--ink); }
+
+    @media (max-width: 640px) {
+      .pipe { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <div class="brand">botassistant <span>· схема</span></div>
+        <p class="subtitle">Одна страница: UI → API → индикаторы/DeepSeek → Telegram → Lighter trading.</p>
+        <div class="nav">
+          <a href="index.php">← стартовая</a>
+          <a href="decision-flow.html">схема решений</a>
+          <a href="lit.php">LIT #120</a>
+          <a href="btc.php">BTC #1</a>
+          <a href="math-report.php?market_id=120">math-report</a>
+          <a href="vol-accuracy-report.php?market_id=120">vol × точность</a>
+        </div>
+      </div>
+    </header>
+
+    <div class="legend">
+      <span><i class="lg-web"></i>UI / public</span>
+      <span><i class="lg-php"></i>PHP core</span>
+      <span><i class="lg-py"></i>Python mcp-lighter</span>
+      <span><i class="lg-data"></i>MySQL</span>
+      <span><i class="lg-ext"></i>внешние API</span>
+    </div>
+
+    <div class="flow">
+      <div class="band">1 · интерфейс</div>
+      <div class="row">
+        <div class="node">
+          <span class="tag t-web">web</span>
+          <h3>public/</h3>
+          <p><code>index.php</code> · <code>lit.php</code> · <code>btc.php</code> · <code>live.php</code> · <code>math-report.php</code></p>
+        </div>
+        <div class="node">
+          <span class="tag t-web">api</span>
+          <h3>public/api.php</h3>
+          <p>markets, live, <code>indicators_*</code>, <code>trading_status</code>, <code>deepseek_queries</code></p>
+        </div>
+      </div>
+
+      <div class="arrow">↓ HTTP / CLI</div>
+      <div class="band">2 · ядро индикаторов</div>
+      <div class="row">
+        <div class="node">
+          <span class="tag t-php">php</span>
+          <h3>src/Lighter/</h3>
+          <p><code>Client</code> → свечи Lighter<br>
+            <code>TechnicalAnalysis</code> · <code>IndicatorSnapshot</code><br>
+            <code>IndicatorHistoryStore</code> · <code>IndicatorAnalyzer</code></p>
+        </div>
+        <div class="node">
+          <span class="tag t-data">mysql</span>
+          <h3>MariaDB · botassistant</h3>
+          <p><code>indicator_snapshots</code> · <code>indicator_stats</code><br>
+            <code>indicator_reports</code> · <code>deepseek_queries</code><br>
+            DSN в <code>config/indicators.env</code></p>
+        </div>
+        <div class="node">
+          <span class="tag t-php">config</span>
+          <h3>config/indicators.env</h3>
+          <p>market_ids, resolutions, список индикаторов, <code>DB_DSN</code></p>
+        </div>
+      </div>
+
+      <div class="arrow">↓ cron / agent</div>
+      <div class="band">3 · пайплайн и ИИ</div>
+      <div class="row">
+        <div class="node">
+          <span class="tag t-php">cli</span>
+          <h3>scripts/</h3>
+          <p><code>indicators_tick_cli.php</code> — snapshot<br>
+            <code>indicators_pipeline_cli.php</code> — snap → DeepSeek → report<br>
+            <code>cron_*.ps1</code> + schtasks</p>
+        </div>
+        <div class="node">
+          <span class="tag t-py">python</span>
+          <h3>mcp-lighter/</h3>
+          <p><code>deepseek_chat.py</code> · <code>indicator_report.py</code><br>
+            <code>trading_status.py</code> · <code>telegram_*</code> · <code>tg_queue.py</code></p>
+        </div>
+        <div class="node">
+          <span class="tag t-ext">api</span>
+          <h3>DeepSeek</h3>
+          <p>анализ compact snapshot → отчёт рынка; clarify ≤3 / тик</p>
+        </div>
+      </div>
+
+      <div class="arrow">↓ очередь / MCP</div>
+      <div class="band">4 · управление и торговля</div>
+      <div class="row">
+        <div class="node">
+          <span class="tag t-py">tg</span>
+          <h3>Telegram bridge</h3>
+          <p><code>telegram_bot.py</code> → очередь<br>
+            агент Cursor каждые 2м: pending → ответ → ack<br>
+            статус позиции каждые 30м (schtask)</p>
+        </div>
+        <div class="node">
+          <span class="tag t-py">mcp</span>
+          <h3>lighter-perps MCP</h3>
+          <p><code>server.py</code> → open/close/TP-SL<br>
+            Cursor agent: LIT lot $200…$400</p>
+        </div>
+        <div class="node">
+          <span class="tag t-ext">exchange</span>
+          <h3>Lighter</h3>
+          <p>perp LIT #120 · account / positions / orders</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="band" style="margin-top:1.5rem">расписание (Windows Task Scheduler)</div>
+    <div class="pipes">
+      <div class="pipe">
+        <div class="when">2м · botassistant-tg-queue-2m</div>
+        <div class="what"><code>cron_tg_queue.ps1</code> → <code>tg_queue_cron_once.py</code> + <code>agent_tick_brief.py</code><br><span>_tg_agent_inbox.json · _agent_tick_brief.json · торгует агент Cursor</span></div>
+      </div>
+      <div class="pipe">
+        <div class="when">5м · botassistant-ind-pipeline</div>
+        <div class="what"><code>cron_indicators.ps1</code> → <code>indicators_pipeline_cli.php</code><br><span>snapshot → DeepSeek → MySQL reports (CRON_INTERVAL_SEC)</span></div>
+      </div>
+      <div class="pipe">
+        <div class="when">30м · botassistant-pos-status-30m</div>
+        <div class="what"><code>cron_position_status.ps1</code> → <code>telegram_notify.py --position-report</code><br><span>LIT $VOL side pnl / sess | INDICATOR</span></div>
+      </div>
+      <div class="pipe">
+        <div class="when">3ч · botassistant-ind-accuracy-3h</div>
+        <div class="what"><code>cron_ind_accuracy.ps1</code> → <code>_ind_accuracy_24h.py</code><br><span>рейтинг индикаторов → Telegram</span></div>
+      </div>
+    </div>
+
+    <details open>
+      <summary>Ключевые пути на диске</summary>
+      <ul>
+        <li><code>public/</code> — веб UI и <code>api.php</code></li>
+        <li><code>src/Lighter/</code> — PHP клиент, TA, snapshot, DeepSeek stores</li>
+        <li><code>mcp-lighter/</code> — Python: бот, очередь, MCP server, DeepSeek helpers</li>
+        <li><code>scripts/</code> — CLI + install_*/cron_* для schtasks</li>
+        <li><code>config/indicators.env</code> — индикаторы, ТФ, <code>DB_DSN</code> (MySQL)</li>
+        <li><code>.cursor/rules/</code> · <code>.cursor/skills/lit-trading*</code> — правила агента</li>
+        <li>MariaDB <code>botassistant</code> — snapshots / stats / reports / deepseek_queries</li>
+        <li><code>public/phpmyadmin/</code> — UI к MySQL</li>
+      </ul>
+    </details>
+  </div>
+</body>
+</html>

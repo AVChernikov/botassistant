@@ -1,0 +1,65 @@
+---
+description: Save critical agent state to MySQL and rotate Cursor chat when context grows
+alwaysApply: true
+---
+
+# Context compaction · agent checkpoints
+
+## Problem
+
+Long 2m-trading chats burn cache tokens. Critical state must survive a **new chat**.
+
+## Critical data (MySQL `agent_checkpoints`)
+
+Packed by `mcp-lighter/agent_checkpoint.py`:
+
+- `_agent_trade_state.json`
+- `_lit_session_state.json`
+- `_tg_control.json`
+- slim `_agent_tick_brief` (position, ROC, session, decision_hint, report stub)
+- handoff markdown → `_agent_handoff.md`
+- rotate timer → `_agent_rotate_state.json`
+
+Autosave: every ~10m from `agent_tick_brief.py` (`reason=auto`). Keep last ~80 rows.
+**No** auto TG «heavy chat» nudge (disabled — Cursor is observer; DeepSeek trades via schtask).
+
+## Telegram (instant, no agent queue)
+
+Commands (live in `telegram_bot.py`):
+
+- `rotate` / `новый чат` / `checkpoint` / `обрезать` → save + TG bootstrap text (manual only)
+
+## When to rotate (cut context)
+
+Do a **save + ask user / TG** when any of:
+
+- Chat is long / tooling-heavy and idle ticks still cost a lot (cache reads huge)
+- User asks to «обрезать контекст» / «новый чат» / «checkpoint» / TG `rotate`
+- Before a risky flip if state must not be lost
+
+Commands (cwd `mcp-lighter`):
+
+```bash
+.\.venv\Scripts\python.exe agent_checkpoint.py rotate --source agent
+.\.venv\Scripts\python.exe agent_checkpoint.py handoff --latest
+```
+
+If chat feels heavy: run `rotate` (or TG `rotate`) — optional; trading does not need Cursor `/loop`.
+
+## New chat bootstrap
+
+```bash
+cd mcp-lighter
+.\.venv\Scripts\python.exe agent_checkpoint.py load --latest --print-handoff
+```
+
+Restores JSON files + prints handoff + resets heavy timer. Then stay in **observer** mode (no `/loop`). Schtask + DeepSeek Pro keep trading; read `_agent_tick_brief.json` only when the user asks.
+
+Also: `list --limit 20`, `load --id N`.
+
+## Do not
+
+- Do not try to delete Cursor transcript from tools — rotation = new chat + DB load
+- Do not put secrets (`.env` keys) into checkpoints
+- Do not claim TG can open a Cursor IDE chat — only save + instructions
+- Do not start `/loop` after load or rotate

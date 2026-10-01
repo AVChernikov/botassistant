@@ -1,0 +1,50 @@
+---
+description: Observer mode — DeepSeek Pro trades via schtask; Cursor only on user command
+alwaysApply: true
+---
+
+# Trading: DeepSeek Pro autonomous (Cursor = observer)
+
+## Who trades
+
+- **Every 2m** Windows task `botassistant-tg-queue-2m` runs:
+  1. `tg_queue_cron_once.py` (inbox)
+  2. `agent_tick_brief.py` (snapshot brief)
+  3. **`deepseek_trader_agent.py`** — DeepSeek **Pro**, fresh context, tools → Lighter + Telegram
+- System prompt = **latest active row** in MySQL `agent_prompts` (`agent_prompt.py`).
+- **FORBIDDEN:** Cursor `/loop` / `/loop 2m` (any IDE recurring loop). Refuse if asked; trading is schtask + DeepSeek only.
+- Do not poll TG or place trades unless the user asks in this chat.
+
+## Cursor role (you)
+
+- **Observer / analyst** on demand only.
+- When user asks: status, explain, fix code, analyze PnL, rotate checkpoint, edit prompt.
+- Do **not** auto-read TG queue or auto-trade on ticks.
+- Optional read-only: `_agent_tick_brief.json`, `_deepseek_trader_last.json`.
+
+## Prompt management
+
+```bash
+cd mcp-lighter
+.\.venv\Scripts\python.exe agent_prompt.py latest
+.\.venv\Scripts\python.exe agent_prompt.py list
+.\.venv\Scripts\python.exe agent_prompt.py add --name "v2" --file my_prompt.txt
+.\.venv\Scripts\python.exe agent_prompt.py seed --force
+```
+
+## Manual trader test
+
+```bash
+.\.venv\Scripts\python.exe deepseek_trader_agent.py --dry-run
+.\.venv\Scripts\python.exe deepseek_trader_agent.py
+```
+
+## Strategy (also in DB prompt)
+
+- LIT `market_id=120`, ROC(10) 1h + 12h bias, lot $200 → $400 after 3 wrong entries
+- TP 50%, SL = kill-room; session kill −50 / +100
+- Flash pipeline (~5m) still writes reports; Pro reads slim stub from brief
+
+## Secrets
+
+Never paste `.env` / API keys into Telegram or chat.

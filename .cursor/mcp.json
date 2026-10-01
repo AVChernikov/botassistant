@@ -1,0 +1,22 @@
+﻿{
+  "mcpServers": {
+    "lighter-perps": {
+      "command": "/home/andy/Рабочий стол/cursor/botassistant/mcp-lighter/.venv/bin/python",
+      "args": [
+        "/home/andy/Рабочий стол/cursor/botassistant/mcp-lighter/server.py"
+      ],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
+    },
+    "botassistant-mysql": {
+      "command": "/home/andy/Рабочий стол/cursor/botassistant/mcp-lighter/.venv/bin/python",
+      "args": [
+        "/home/andy/Рабочий стол/cursor/botassistant/mcp-lighter/mysql_mcp_server.py"
+      ],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

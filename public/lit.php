@@ -7,7 +7,7 @@ declare(strict_types=1);
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BTC #1 · анализ · botassistant</title>
+  <title>LIT #120 · анализ · botassistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -203,20 +203,24 @@ declare(strict_types=1);
   <div class="wrap">
     <header>
       <div>
-        <div class="brand">BTC <span>#1 perp</span></div>
+        <div class="brand">LIT <span>#120 perp</span></div>
         <p class="subtitle">Mainnet · графики 1d → 1m с MACD, затем инструмент, стакан и сделки.</p>
       </div>
       <div class="nav">
-        <a href="lit.php">LIT #120</a>
+        <a href="vol-accuracy-report.php?market_id=120">vol × точность</a>
+        <span style="color:var(--muted);margin:0 .35rem">·</span>
+        <a href="sim-1m.php">эмуляция 1m</a>
+        <span style="color:var(--muted);margin:0 .35rem">·</span>
+        <a href="btc.php">BTC #1</a>
         ·
-        <a href="index.php">← общая страница</a>
+        <a href="index.php">общая</a>
       </div>
     </header>
 
     <div class="toolbar">
       <button type="button" id="reloadBtn">Обновить анализ</button>
     </div>
-    <p class="status" id="status">Загружаю BTC #1…</p>
+    <p class="status" id="status">Загружаю LIT #120…</p>
 
     <div id="frames"></div>
 
@@ -238,7 +242,7 @@ declare(strict_types=1);
     <div class="toolbar" style="margin-top:1.5rem;justify-content:center">
       <a
         id="mathBtn"
-        href="math-report.php?market_id=1"
+        href="math-report.php?market_id=120"
         target="_blank"
         rel="noopener noreferrer"
         style="display:inline-flex;align-items:center;justify-content:center;min-width:280px;height:3rem;padding:0 1.15rem;border-radius:12px;background:var(--accent);color:#fff;font-weight:700;font-size:1rem;text-decoration:none"
@@ -252,7 +256,8 @@ declare(strict_types=1);
   <script src="chart-crosshair.js?v=1"></script>
   <script src="chart-candles.js?v=1"></script>
   <script>
-    const MARKET_ID = 1;
+    const MARKET_ID = 120;
+    const MARKET_LABEL = 'LIT';
     const RESOLUTIONS = ['1d', '4h', '1h', '30m', '15m', '5m', '1m'];
 
     const els = {
@@ -293,12 +298,14 @@ declare(strict_types=1);
 
     async function api(action, params = {}) {
       try {
-        if (action === 'btc_analyze') return await LighterPublicApi.btcAnalyze(params);
+        if (action === 'btc_analyze' || action === 'market_analyze') {
+          return await LighterPublicApi.marketAnalyze({ ...params, market_id: MARKET_ID });
+        }
       } catch (directError) {
         console.warn('Direct Lighter request failed; using local fallback.', directError);
       }
 
-      const q = new URLSearchParams({ action, ...params });
+      const q = new URLSearchParams({ action: 'market_analyze', market_id: String(MARKET_ID), ...params });
       const res = await fetch('api.php?' + q.toString());
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
@@ -491,7 +498,7 @@ declare(strict_types=1);
       const m = payload.market || {};
       const s = payload.market_stats || {};
       const rows = [
-        ['Символ', m.symbol ?? 'BTC'],
+        ['Символ', m.symbol ?? MARKET_LABEL],
         ['Market ID', m.market_id ?? MARKET_ID],
         ['Тип', m.market_type ?? 'perp'],
         ['Сеть', 'mainnet'],
@@ -559,9 +566,9 @@ declare(strict_types=1);
 
     async function loadAnalysis() {
       els.reloadBtn.disabled = true;
-      setStatus('Загружаю BTC #1 · mainnet · 7 таймфреймов…');
+      setStatus(`Загружаю ${MARKET_LABEL} #${MARKET_ID} · mainnet · 7 таймфреймов…`);
       try {
-        const data = await api('btc_analyze', {
+        const data = await api('market_analyze', {
           candle_count: 200,
           depth: 12,
           trades: 25,
@@ -573,7 +580,7 @@ declare(strict_types=1);
         renderInfo(data);
         renderBook(data.order_book || {});
         renderTrades(data.trades || []);
-        setStatus(`Готово · BTC #${MARKET_ID} perp mainnet · ${frames.map(f => f.resolution).join(' · ')}`);
+        setStatus(`Готово · ${MARKET_LABEL} #${MARKET_ID} perp mainnet · ${frames.map(f => f.resolution).join(' · ')}`);
       } catch (e) {
         setStatus(e.message, true);
       } finally {

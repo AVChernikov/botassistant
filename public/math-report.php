@@ -8,9 +8,19 @@ use Lighter\Client;
 use Lighter\Exception\ApiException;
 use Lighter\TechnicalAnalysis;
 
-$marketId = 1;
+$marketId = filter_var($_GET['market_id'] ?? 1, FILTER_VALIDATE_INT);
+$marketId = $marketId === false ? 1 : $marketId;
+$marketLabels = [
+    1 => 'BTC',
+    120 => 'LIT',
+];
+$marketSymbol = $marketLabels[$marketId] ?? ('#' . $marketId);
 $resolutions = ['1d', '4h', '1h', '30m', '15m', '5m', '1m'];
-$candleCount = 200;
+$allowedCandleCounts = [200, 400, 600];
+$candleCount = filter_var($_GET['candles'] ?? 200, FILTER_VALIDATE_INT);
+if ($candleCount === false || !in_array($candleCount, $allowedCandleCounts, true)) {
+    $candleCount = 200;
+}
 $horizon = 1;
 $error = null;
 $report = null;
@@ -19,10 +29,27 @@ $frames = [];
 $topCharts = [];
 
 try {
-    $client = Client::mainnet(45);
+    $client = Client::mainnet(60);
+    $details = $client->orderBookDetails($marketId);
+    $marketRow = ($details['order_book_details'] ?? [])[0] ?? null;
+    if (is_array($marketRow) && !empty($marketRow['symbol'])) {
+        $marketSymbol = (string) $marketRow['symbol'];
+    }
+    $requests = [];
     foreach ($resolutions as $resolution) {
-        $resp = $client->candles($marketId, $resolution, countBack: $candleCount);
-        $items = $resp['c'] ?? [];
+        foreach ($client->candlesHistoryRequests($marketId, $resolution, $candleCount) as $pageKey => $req) {
+            $requests[$resolution . '__' . $pageKey] = $req;
+        }
+    }
+    $responses = $client->getMany($requests);
+    foreach ($resolutions as $resolution) {
+        $pages = [];
+        foreach ($responses as $key => $payload) {
+            if (str_starts_with((string) $key, $resolution . '__')) {
+                $pages[] = $payload;
+            }
+        }
+        $items = Client::mergeCandlePages($pages, $candleCount);
         $frames[$resolution] = $items;
         $loaded[$resolution] = count($items);
     }
@@ -52,12 +79,12 @@ function num(?float $v, int $digits = 2): string
     return number_format($v, $digits);
 }
 
-function methodLiveLink(string $method, string $resolution): string
+function methodLiveLink(string $method, string $resolution, int $marketId): string
 {
     $href = 'live.php?' . http_build_query([
         'method' => $method,
         'resolution' => $resolution,
-        'market_id' => 1,
+        'market_id' => $marketId,
     ]);
 
     return '<a class="method-link" href="' . htmlspecialchars($href, ENT_QUOTES)
@@ -67,13 +94,15 @@ function methodLiveLink(string $method, string $resolution): string
 
 $best = $report['best'] ?? null;
 $results = $report['results'] ?? [];
+$hubHref = $marketId === 120 ? 'lit.php' : ($marketId === 1 ? 'btc.php' : 'index.php');
+$hubLabel = $marketId === 120 ? '← LIT анализ' : ($marketId === 1 ? '← BTC анализ' : '← общая');
 
 ?><!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Математический анализ · BTC #1</title>
+  <title>Математический анализ · <?= htmlspecialchars($marketSymbol, ENT_QUOTES) ?> #<?= (int) $marketId ?></title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -190,8 +219,9 @@ $results = $report['results'] ?? [];
       margin: 0 0 0.65rem;
     }
     .chart-wrap {
+      position: relative;
       width: 100%;
-      height: 260px;
+      height: 300px;
     }
     .chart-wrap.indicator { height: 170px; margin-top: 0.55rem; }
     .chart-wrap canvas {
@@ -199,16 +229,59 @@ $results = $report['results'] ?? [];
       height: 100%;
       display: block;
     }
+    .candle-switch {
+      display: inline-flex;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .candle-switch .label {
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-right: 0.25rem;
+    }
+    .candle-switch a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 3.2rem;
+      padding: 0.4rem 0.7rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--ink);
+      text-decoration: none;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.82rem;
+      font-weight: 500;
+    }
+    .candle-switch a:hover { border-color: var(--accent); color: var(--accent); }
+    .candle-switch a.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:end">
       <div>
-        <div class="brand">Проверка мат. анализа <span>· BTC #1</span></div>
+        <div class="brand">Проверка мат. анализа <span>· <?= htmlspecialchars($marketSymbol, ENT_QUOTES) ?> #<?= (int) $marketId ?></span></div>
         <p class="subtitle">Mainnet perp · все ТФ · сравнение методов по точности сигналов</p>
       </div>
-      <div class="nav"><a href="btc.php">← BTC анализ</a></div>
+      <div style="display:flex;gap:0.85rem;flex-wrap:wrap;align-items:center">
+        <div class="candle-switch" aria-label="Количество свечей">
+          <span class="label">Свечей:</span>
+          <?php foreach ($allowedCandleCounts as $n): ?>
+            <a
+              class="<?= $candleCount === $n ? 'active' : '' ?>"
+              href="?<?= htmlspecialchars(http_build_query(['market_id' => $marketId, 'candles' => $n]), ENT_QUOTES) ?>"
+            ><?= (int) $n ?></a>
+          <?php endforeach; ?>
+        </div>
+        <div class="nav"><a href="<?= htmlspecialchars($hubHref, ENT_QUOTES) ?>"><?= htmlspecialchars($hubLabel, ENT_QUOTES) ?></a></div>
+      </div>
     </div>
 
     <?php if ($error !== null): ?>
@@ -217,7 +290,7 @@ $results = $report['results'] ?? [];
       <div class="panel">
         <h2>Данные</h2>
         <p class="note">
-          Загружено свечей:
+          Запрошено <?= (int) $candleCount ?> свечей на каждый ТФ · загружено:
           <?php foreach ($loaded as $tf => $count): ?>
             <strong><?= htmlspecialchars($tf) ?></strong>=<?= (int) $count ?><?= $tf === array_key_last($loaded) ? '' : ',' ?>
           <?php endforeach; ?>
@@ -231,7 +304,7 @@ $results = $report['results'] ?? [];
         <div class="panel winner">
           <h2>Наиболее точный результат</h2>
           <div class="big">
-            <?= methodLiveLink((string) $best['method'], (string) $best['resolution']) ?>
+            <?= methodLiveLink((string) $best['method'], (string) $best['resolution'], $marketId) ?>
             на интервале
             <?= htmlspecialchars((string) $best['resolution']) ?>
           </div>
@@ -278,7 +351,7 @@ $results = $report['results'] ?? [];
                   <?php if ($row === null) continue; ?>
                   <tr>
                     <td><?= htmlspecialchars($tf) ?></td>
-                    <td><?= methodLiveLink((string) $row['method'], (string) $row['resolution']) ?></td>
+                    <td><?= methodLiveLink((string) $row['method'], (string) $row['resolution'], $marketId) ?></td>
                     <td class="good"><?= pct($row['accuracy']) ?></td>
                     <td><?= (int) $row['signals'] ?></td>
                     <td class="<?= ($row['strategy_return_pct'] ?? 0) >= 0 ? 'good' : 'bad' ?>"><?= num($row['strategy_return_pct']) ?></td>
@@ -307,7 +380,7 @@ $results = $report['results'] ?? [];
               <tbody>
                 <?php foreach ($report['by_method'] as $row): ?>
                   <tr>
-                    <td><?= methodLiveLink((string) $row['method'], (string) $row['resolution']) ?></td>
+                    <td><?= methodLiveLink((string) $row['method'], (string) $row['resolution'], $marketId) ?></td>
                     <td><?= htmlspecialchars((string) $row['resolution']) ?></td>
                     <td class="good"><?= pct($row['accuracy']) ?></td>
                     <td><?= (int) $row['signals'] ?></td>
@@ -342,7 +415,7 @@ $results = $report['results'] ?? [];
                 <?php foreach ($results as $i => $row): ?>
                   <tr class="<?= $i === 0 ? 'top' : '' ?>">
                     <td><?= $i + 1 ?></td>
-                    <td><?= methodLiveLink((string) $row['method'], (string) $row['resolution']) ?></td>
+                    <td><?= methodLiveLink((string) $row['method'], (string) $row['resolution'], $marketId) ?></td>
                     <td><?= htmlspecialchars((string) $row['resolution']) ?></td>
                     <td class="good"><?= pct($row['accuracy']) ?></td>
                     <td class="<?= ($row['accuracy_last5'] ?? 0) >= 0.5 ? 'good' : 'bad' ?>">
@@ -369,8 +442,11 @@ $results = $report['results'] ?? [];
             <p class="note">Для каждой позиции: свечной график ТФ и график значений индикатора.</p>
             <div id="topCharts"></div>
           </div>
+          <script src="chart-crosshair.js?v=1"></script>
+          <script src="chart-candles.js?v=1"></script>
           <script>
             const TOP_CHARTS = <?= json_encode($topCharts, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+            const MARKET_ID = <?= (int) $marketId ?>;
 
             function fmt(n, digits = 4) {
               if (n === null || n === undefined || n === '') return '—';
@@ -393,49 +469,13 @@ $results = $report['results'] ?? [];
             }
 
             function drawCandles(canvas, candles) {
-              const { ctx, cssW, cssH } = prepareCanvas(canvas);
-              if (!candles.length) return;
-              const pad = { top: 12, right: 58, bottom: 28, left: 8 };
-              const plotW = cssW - pad.left - pad.right;
-              const plotH = cssH - pad.top - pad.bottom;
-              let min = Infinity, max = -Infinity;
-              for (const c of candles) {
-                min = Math.min(min, Number(c.l));
-                max = Math.max(max, Number(c.h));
-              }
-              const padY = (max - min) * 0.06 || 1;
-              min -= padY; max += padY;
-              const yScale = (p) => pad.top + ((max - p) / (max - min)) * plotH;
-              const slot = plotW / candles.length;
-              const bodyW = Math.max(1.5, Math.min(14, slot * 0.6));
-
-              ctx.strokeStyle = '#d5ddd7';
-              ctx.fillStyle = '#5c6b61';
-              ctx.font = '11px "IBM Plex Mono", monospace';
-              ctx.textAlign = 'left';
-              for (let i = 0; i <= 4; i++) {
-                const price = max - ((max - min) * i) / 4;
-                const y = yScale(price);
-                ctx.beginPath();
-                ctx.moveTo(pad.left, y);
-                ctx.lineTo(cssW - pad.right, y);
-                ctx.stroke();
-                ctx.fillText(fmt(price, 2), cssW - pad.right + 6, y + 4);
-              }
-
-              candles.forEach((c, i) => {
-                const o = Number(c.o), h = Number(c.h), l = Number(c.l), cl = Number(c.c);
-                const color = cl >= o ? '#0f6b4c' : '#b42318';
-                const x = pad.left + slot * i + slot / 2;
-                ctx.strokeStyle = color;
-                ctx.fillStyle = color;
-                ctx.lineWidth = 1.3;
-                ctx.beginPath();
-                ctx.moveTo(x, yScale(h));
-                ctx.lineTo(x, yScale(l));
-                ctx.stroke();
-                const yO = yScale(o), yC = yScale(cl);
-                ctx.fillRect(x - bodyW / 2, Math.min(yO, yC), bodyW, Math.max(1, Math.abs(yC - yO)));
+              if (!window.ChartCandles) return;
+              ChartCandles.draw(canvas, candles, {
+                padTop: 12,
+                padRight: 58,
+                padBottom: 28,
+                padLeft: 8,
+                maxBody: 14,
               });
             }
 
@@ -527,6 +567,9 @@ $results = $report['results'] ?? [];
                 });
                 ctx.stroke();
               }
+              if (window.ChartCrosshair) {
+                ChartCrosshair.mark(canvas, { pad, points: n });
+              }
             }
 
             const root = document.getElementById('topCharts');
@@ -539,7 +582,7 @@ $results = $report['results'] ?? [];
               const liveUrl = 'live.php?' + new URLSearchParams({
                 method: item.method,
                 resolution: item.resolution,
-                market_id: '1',
+                market_id: String(MARKET_ID),
               }).toString();
               block.innerHTML = `
                 <h3>#${item.rank} · <a class="method-link" href="${liveUrl}" target="_blank" rel="noopener noreferrer">${item.method}</a> · ${item.resolution}</h3>
@@ -553,6 +596,7 @@ $results = $report['results'] ?? [];
               drawCandles(priceCanvas, item.candles || []);
               drawIndicator(indCanvas, item.indicator || {});
             });
+            if (window.ChartCrosshair) ChartCrosshair.refresh();
 
             window.addEventListener('resize', () => {
               for (const d of drawn) {

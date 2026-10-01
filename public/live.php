@@ -146,7 +146,7 @@ $titleTf = htmlspecialchars($resolution, ENT_QUOTES);
       font-size: 0.95rem;
     }
     .panel-body { padding: 1rem; }
-    .chart-wrap { width: 100%; height: 300px; }
+    .chart-wrap { position: relative; width: 100%; height: 340px; }
     .chart-wrap.indicator { height: 180px; }
     .chart-wrap canvas { width: 100%; height: 100%; display: block; }
     .grid {
@@ -191,10 +191,10 @@ $titleTf = htmlspecialchars($resolution, ENT_QUOTES);
     <header>
       <div>
         <div class="brand">Live <span>· <?= $titleMethod ?></span></div>
-        <p class="subtitle">BTC #<?= (int) $marketId ?> perp · <?= $titleTf ?> · автообновление каждые 30 сек</p>
+        <p class="subtitle">#<?= (int) $marketId ?> perp · <?= $titleTf ?> · автообновление каждые 30 сек</p>
       </div>
       <div class="nav">
-        <a href="math-report.php">← отчёт</a>
+        <a href="math-report.php?market_id=<?= (int) $marketId ?>">← отчёт</a>
       </div>
     </header>
 
@@ -243,6 +243,8 @@ $titleTf = htmlspecialchars($resolution, ENT_QUOTES);
     </div>
   </div>
 
+  <script src="chart-crosshair.js?v=1"></script>
+  <script src="chart-candles.js?v=1"></script>
   <script>
     const CONFIG = {
       method: <?= json_encode($method, JSON_UNESCAPED_UNICODE) ?>,
@@ -329,55 +331,14 @@ $titleTf = htmlspecialchars($resolution, ENT_QUOTES);
     }
 
     function drawCandles(canvas, candles) {
-      const { ctx, cssW, cssH } = prepareCanvas(canvas);
-      if (!candles.length) {
-        ctx.fillStyle = '#5c6b61';
-        ctx.font = '14px Manrope, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('Нет свечей', cssW / 2, cssH / 2);
-        return;
-      }
-      const pad = { top: 12, right: 58, bottom: 28, left: 8 };
-      const plotW = cssW - pad.left - pad.right;
-      const plotH = cssH - pad.top - pad.bottom;
-      let min = Infinity, max = -Infinity;
-      for (const c of candles) {
-        min = Math.min(min, Number(c.l));
-        max = Math.max(max, Number(c.h));
-      }
-      const padY = (max - min) * 0.06 || 1;
-      min -= padY; max += padY;
-      const yScale = (p) => pad.top + ((max - p) / (max - min)) * plotH;
-      const slot = plotW / candles.length;
-      const bodyW = Math.max(1.5, Math.min(14, slot * 0.6));
-
-      ctx.strokeStyle = '#d5ddd7';
-      ctx.fillStyle = '#5c6b61';
-      ctx.font = '11px "IBM Plex Mono", monospace';
-      ctx.textAlign = 'left';
-      for (let i = 0; i <= 4; i++) {
-        const price = max - ((max - min) * i) / 4;
-        const y = yScale(price);
-        ctx.beginPath();
-        ctx.moveTo(pad.left, y);
-        ctx.lineTo(cssW - pad.right, y);
-        ctx.stroke();
-        ctx.fillText(fmt(price, 2), cssW - pad.right + 6, y + 4);
-      }
-
-      candles.forEach((c, i) => {
-        const o = Number(c.o), h = Number(c.h), l = Number(c.l), cl = Number(c.c);
-        const color = cl >= o ? '#0f6b4c' : '#b42318';
-        const x = pad.left + slot * i + slot / 2;
-        ctx.strokeStyle = color;
-        ctx.fillStyle = color;
-        ctx.lineWidth = 1.3;
-        ctx.beginPath();
-        ctx.moveTo(x, yScale(h));
-        ctx.lineTo(x, yScale(l));
-        ctx.stroke();
-        const yO = yScale(o), yC = yScale(cl);
-        ctx.fillRect(x - bodyW / 2, Math.min(yO, yC), bodyW, Math.max(1, Math.abs(yC - yO)));
+      if (!window.ChartCandles) return;
+      ChartCandles.draw(canvas, candles, {
+        padTop: 12,
+        padRight: 58,
+        padBottom: 28,
+        padLeft: 8,
+        maxBody: 14,
+        emptyText: 'Нет свечей',
       });
     }
 
@@ -460,6 +421,9 @@ $titleTf = htmlspecialchars($resolution, ENT_QUOTES);
         });
         ctx.stroke();
       }
+      if (window.ChartCrosshair) {
+        ChartCrosshair.mark(canvas, { pad, points: n });
+      }
     }
 
     function orderUsd(o) {
@@ -473,7 +437,7 @@ $titleTf = htmlspecialchars($resolution, ENT_QUOTES);
       const m = data.market || {};
       const s = data.market_stats || {};
       const rows = [
-        ['Символ', m.symbol ?? 'BTC'],
+        ['Символ', m.symbol ?? ('#' + CONFIG.marketId)],
         ['Market ID', m.market_id ?? CONFIG.marketId],
         ['Метод', CONFIG.method],
         ['ТФ', data.resolution || CONFIG.resolution],
