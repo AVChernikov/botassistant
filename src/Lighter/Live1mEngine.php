@@ -1453,14 +1453,55 @@ PROMPT;
         $meth = $all[$method] ?? $roc;
         $n = count($candles);
         $i = $n - 1;
-        $prev = $n - 2;
-        $rocSig = (int) ($roc[$i] ?? 0);
-        $smaSig = (int) ($sma[$i] ?? 0);
-        // Methods emit impulse ±1 only on the cross bar, then 0. Live polls every ~30s and
-        // can miss that bar — use last non-zero (current regime) so we still align.
-        $methodSig = self::lastNonZeroSignal($meth, $i);
-        $prevMethod = self::lastNonZeroSignal($meth, $prev);
-        $impulseSig = (int) ($meth[$i] ?? 0);
+        // Ignore forming bar: live close jitters ROC across ±eps and fake-flips.
+        $closed = max(0, $n - 2);
+        $prevClosed = max(0, $n - 3);
+        $rocSig = (int) ($roc[$closed] ?? 0);
+        $smaSig = (int) ($sma[$closed] ?? 0);
+        // Methods emit impulse ±1 only on the cross bar, then 0. Use last non-zero
+        // regime on closed bars so we still catch crosses if a tick was slow.
+        $methodSig = self::lastNonZeroSignal($meth, $closed);
+        $prevMethod = self::lastNonZeroSignal($meth, $prevClosed);
+        $impulseSig = (int) ($meth[$closed] ?? 0);
+        $zeroMeta = TechnicalAnalysis::methodZeroSeries($candles, $method);
+        $deadzoneEps = (float) ($zeroMeta['eps'] ?? 0);
+        $indValue = $zeroMeta['value'];
+        $series = $zeroMeta['series'] ?? [];
+        $prevInd = null;
+        if (is_array($series) && $closed > 0 && array_key_exists($closed - 1, $series) && $series[$closed - 1] !== null) {
+            $prevInd = (float) $series[$closed - 1];
+        }
+        $inDeadzone = $indValue !== null && $deadzoneEps > 0 && abs((float) $indValue) <= $deadzoneEps;
+        $indUnit = (string) ($zeroMeta['unit'] ?? '');
+        $boundNote = 'нет креста границы';
+        if ($indValue !== null && $prevInd !== null && $deadzoneEps > 0) {
+            if ($prevInd < -$deadzoneEps && (float) $indValue >= -$deadzoneEps) {
+                $boundNote = 'long: −eps снизу↑';
+            } elseif ($prevInd > $deadzoneEps && (float) $indValue <= $deadzoneEps) {
+                $boundNote = 'short: +eps сверху↓';
+            } elseif ($inDeadzone) {
+                $boundNote = 'внутри зоны';
+            } elseif ((float) $indValue > $deadzoneEps) {
+                $boundNote = 'выше +eps';
+            } else {
+                $boundNote = 'ниже −eps';
+            }
+        }
+        $logs[] = [
+            'level' => 'info',
+            'message' => sprintf(
+                'сигнал %s: prev=%s value=%s eps±%s %s · %s · %s · impulse=%+d regime=%+d',
+                $method,
+                $prevInd === null ? 'n/a' : sprintf('%.5f', $prevInd),
+                $indValue === null ? 'n/a' : sprintf('%.5f', $indValue),
+                $deadzoneEps > 0 ? sprintf('%.5f', $deadzoneEps) : '0',
+                $indUnit !== '' ? '(' . $indUnit . ')' : '',
+                $indValue === null ? 'нет значения' : ($inDeadzone ? 'в мёртвой зоне' : 'вне мёртвой зоны'),
+                $boundNote,
+                $impulseSig,
+                $methodSig
+            ),
+        ];
 
         $last = $candles[$i];
         $price = (float) ($last['c'] ?? 0);
@@ -1554,7 +1595,7 @@ PROMPT;
             }
         }
 
-        // Follow regime from last zero-cross (not only impulse on the current bar).
+        // Follow regime from last deadzone-boundary cross (not zero-cross).
         if ($status === 'running' && $action === 'hold') {
             $crossLong = $methodSig > 0 && $side !== 'long';
             $crossShort = $methodSig < 0 && $side !== 'short';
@@ -1604,7 +1645,7 @@ PROMPT;
                 }
                 if ($side !== 'long') {
                     [$side, $size, $entry, $entryTs, $tp, $sl, $fees, $tradesCount, $tr] = self::openPaper(
-                        'long', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, 'roc/method cross +1', $tradesCount,
+                        'long', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, 'deadzone −eps↑ long', $tradesCount,
                         $tpLevels, $slLevels
                     );
                     $trades[] = $tr;
@@ -1612,7 +1653,8 @@ PROMPT;
                     $uPnl = 0.0;
                     $sessionPnl = $realized;
                     $action = 'open_long';
-                    $reason = 'method cross to long';
+                    $reason = 'deadzone −eps↑ long'
+                        . ($deadzoneEps > 0 ? sprintf(' (eps±%.4g)', $deadzoneEps) : '');
                 }
             } elseif ($crossShort) {
                 if ($side === 'long') {
@@ -1623,7 +1665,7 @@ PROMPT;
                 }
                 if ($side !== 'short') {
                     [$side, $size, $entry, $entryTs, $tp, $sl, $fees, $tradesCount, $tr] = self::openPaper(
-                        'short', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, 'roc/method cross -1', $tradesCount,
+                        'short', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, 'deadzone +eps↓ short', $tradesCount,
                         $tpLevels, $slLevels
                     );
                     $trades[] = $tr;
@@ -1631,7 +1673,8 @@ PROMPT;
                     $uPnl = 0.0;
                     $sessionPnl = $realized;
                     $action = 'open_short';
-                    $reason = 'method cross to short';
+                    $reason = 'deadzone +eps↓ short'
+                        . ($deadzoneEps > 0 ? sprintf(' (eps±%.4g)', $deadzoneEps) : '');
                 }
             } else {
                 $action = $side ? 'hold_pos' : 'flat';
@@ -1641,6 +1684,12 @@ PROMPT;
                         : ('in position, regime ' . ($methodSig > 0 ? '+1' : '-1'));
                 } else {
                     $reason = $methodSig === 0 ? 'no regime / no cross' : 'no new cross';
+                }
+                if ($deadzoneEps > 0) {
+                    $reason .= sprintf(' · eps±%.4g', $deadzoneEps);
+                    if ($indValue !== null) {
+                        $reason .= $inDeadzone ? ' · в зоне' : ' · вне зоны';
+                    }
                 }
             }
         }
@@ -1698,6 +1747,10 @@ PROMPT;
                 'method_pick' => $methodPick,
                 'prev_method_sig' => $prevMethod,
                 'impulse_sig' => $impulseSig,
+                'deadzone_eps' => $deadzoneEps > 0 ? $deadzoneEps : null,
+                'indicator_value' => $indValue,
+                'in_deadzone' => $inDeadzone,
+                'signal_bar' => 'closed',
                 'candles' => count($candles),
                 'live' => true,
                 'position_size' => $size,

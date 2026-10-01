@@ -324,7 +324,7 @@
   </div>
 
   <script src="chart-candles.js?v=2"></script>
-  <script src="sim-1m-chart.js?v=8"></script>
+  <script src="sim-1m-chart.js?v=10"></script>
   <script>
     const API = 'api.php';
     const STATUS_ACTION = 'live_1m_status';

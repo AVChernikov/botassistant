@@ -53,7 +53,7 @@
   }
 
   function sliceIndicator(indicator, n) {
-    if (!indicator) return { lines: [], levels: [], hist: null };
+    if (!indicator) return { lines: [], levels: [], hist: null, bands: [] };
     return {
       ...indicator,
       lines: (indicator.lines || []).map((line) => ({
@@ -62,6 +62,9 @@
       })),
       hist: indicator.hist ? sliceTail(indicator.hist, n) : null,
       levels: indicator.levels || [],
+      bands: indicator.bands || [],
+      deadzone_eps: indicator.deadzone_eps,
+      vol_median: indicator.vol_median,
     };
   }
 
@@ -132,6 +135,7 @@
     const lines = indicator?.lines || [];
     const hist = indicator?.hist || null;
     const levels = indicator?.levels || [];
+    const bands = Array.isArray(indicator?.bands) ? indicator.bands : [];
     const values = [];
     for (const line of lines) {
       for (const v of line.values || []) if (v != null) values.push(Number(v));
@@ -155,8 +159,17 @@
     let min = Math.min(...values);
     let max = Math.max(...values);
     for (const lv of levels) {
-      min = Math.min(min, lv);
-      max = Math.max(max, lv);
+      const nlv = Number(lv);
+      if (Number.isFinite(nlv)) {
+        min = Math.min(min, nlv);
+        max = Math.max(max, nlv);
+      }
+    }
+    for (const b of bands) {
+      const lo = Number(b && b.lo);
+      const hi = Number(b && b.hi);
+      if (Number.isFinite(lo)) min = Math.min(min, lo);
+      if (Number.isFinite(hi)) max = Math.max(max, hi);
     }
     if (hist) {
       min = Math.min(min, 0);
@@ -167,6 +180,35 @@
     max += padY;
     const yScale = (v) => pad.top + ((max - v) / (max - min)) * plotH;
     const slot = plotW / n;
+
+    // Deadzone / hysteresis bands first (behind grid + series).
+    for (const b of bands) {
+      const lo = Number(b.lo);
+      const hi = Number(b.hi);
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
+      const y1 = yScale(hi);
+      const y2 = yScale(lo);
+      const top = Math.min(y1, y2);
+      const h = Math.max(1, Math.abs(y2 - y1));
+      ctx.fillStyle = b.color || 'rgba(196, 92, 38, 0.18)';
+      ctx.fillRect(pad.left, top, plotW, h);
+      ctx.strokeStyle = b.border || '#c45c26';
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y1);
+      ctx.lineTo(cssW - pad.right, y1);
+      ctx.moveTo(pad.left, y2);
+      ctx.lineTo(cssW - pad.right, y2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (b.label) {
+        ctx.fillStyle = b.border || '#c45c26';
+        ctx.font = '10px "IBM Plex Mono", monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(String(b.label), pad.left + 4, top + 12);
+      }
+    }
 
     ctx.strokeStyle = '#d5ddd7';
     ctx.fillStyle = '#5c6b61';
@@ -181,15 +223,25 @@
       ctx.fillText(fmt(v, 2), cssW - pad.right + 6, y + 4);
     });
 
+      // Zero + deadzone edges with labels on the right.
     for (const lv of levels) {
-      const y = yScale(lv);
-      ctx.strokeStyle = '#9aa89f';
-      ctx.setLineDash([4, 4]);
+      const nlv = Number(lv);
+      if (!Number.isFinite(nlv)) continue;
+      const y = yScale(nlv);
+      const isZero = Math.abs(nlv) < 1e-12;
+      ctx.strokeStyle = isZero ? '#5c6b61' : '#c45c26';
+      ctx.lineWidth = isZero ? 1.2 : 1.1;
+      ctx.setLineDash(isZero ? [] : [4, 4]);
       ctx.beginPath();
       ctx.moveTo(pad.left, y);
       ctx.lineTo(cssW - pad.right, y);
       ctx.stroke();
       ctx.setLineDash([]);
+      ctx.fillStyle = isZero ? '#5c6b61' : '#c45c26';
+      ctx.font = '10px "IBM Plex Mono", monospace';
+      ctx.textAlign = 'left';
+      const tag = isZero ? '0' : (nlv > 0 ? '+' : '') + fmt(nlv, 2);
+      ctx.fillText(tag, cssW - pad.right + 6, y + 3);
     }
 
     if (hist) {
@@ -314,7 +366,12 @@
 
       const last = candles[candles.length - 1];
       const px = last ? fmt(last.c, 4) : '—';
-      setMeta(`${resolution} · ${method} · px ${px} · bars ${candles.length} · ${new Date().toLocaleTimeString('ru-RU')}`);
+      const eps = indicator.deadzone_eps != null ? Number(indicator.deadzone_eps) : null;
+      const vol = indicator.vol_median != null ? Number(indicator.vol_median) : null;
+      const dz = Number.isFinite(eps)
+        ? ` · deadzone ±${eps.toFixed(2)}${Number.isFinite(vol) ? ` (vol ${vol.toFixed(2)})` : ''}`
+        : '';
+      setMeta(`${resolution} · ${method}${dz} · px ${px} · bars ${candles.length} · ${new Date().toLocaleTimeString('ru-RU')}`);
     } catch (e) {
       setMeta(String(e.message || e), true);
     } finally {

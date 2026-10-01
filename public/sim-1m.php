@@ -278,7 +278,7 @@ declare(strict_types=1);
   </div>
 
   <script src="chart-candles.js?v=2"></script>
-  <script src="sim-1m-chart.js?v=7"></script>
+  <script src="sim-1m-chart.js?v=10"></script>
   <script>
     const API = 'api.php';
     const STATUS_ACTION = 'sim_1m_status';
