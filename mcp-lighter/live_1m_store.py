@@ -285,20 +285,22 @@ def set_lead(
             return {"ok": False, "error": "method_mode must be flash|manual"}
         if session_id:
             row = con.execute(
-                "SELECT id, config_json FROM live_1m_sessions WHERE id=? AND status='running'",
+                "SELECT id, config_json, method, resolution FROM live_1m_sessions WHERE id=? AND status='running'",
                 (int(session_id),),
             ).fetchone()
         else:
             row = con.execute(
                 """
-                SELECT id, config_json FROM live_1m_sessions
+                SELECT id, config_json, method, resolution FROM live_1m_sessions
                 WHERE status='running' ORDER BY id DESC LIMIT 1
                 """
             ).fetchone()
         if not row:
             return {"ok": False, "error": "no running session"}
-        sid = int(row[0] if not hasattr(row, "keys") else row["id"])
-        cfg_raw = row[1] if not hasattr(row, "keys") else row["config_json"]
+        sid = int(row["id"] if hasattr(row, "keys") else row[0])
+        cfg_raw = row["config_json"] if hasattr(row, "keys") else row[1]
+        cur_method = str((row["method"] if hasattr(row, "keys") else row[2]) or "")
+        cur_res = str((row["resolution"] if hasattr(row, "keys") else row[3]) or "") or None
         cfg: dict = {}
         if isinstance(cfg_raw, str) and cfg_raw.strip():
             try:
@@ -309,6 +311,14 @@ def set_lead(
                 cfg = {}
         elif isinstance(cfg_raw, dict):
             cfg = dict(cfg_raw)
+        locked = str(cfg.get("method_mode") or "flash").lower() == "manual"
+        # Manual lock: ignore method changes unless UI explicitly sets mode=manual|flash.
+        # mode=None is Flash auto-apply / setResolution — must not steal the indicator.
+        blocked = False
+        if locked and mode is None:
+            if method != cur_method:
+                blocked = True
+            method = cur_method or method
         if mode:
             cfg["method_mode"] = mode
             cfg["method_source"] = "manual" if mode == "manual" else "deepseek-flash"
@@ -316,6 +326,9 @@ def set_lead(
         res = str(resolution or "").strip() or None
         if res:
             cfg["resolution"] = res
+        elif cur_res:
+            res = cur_res
+        if res:
             con.execute(
                 """
                 UPDATE live_1m_sessions
@@ -327,7 +340,7 @@ def set_lead(
                     res,
                     json.dumps(cfg, ensure_ascii=True),
                     now,
-                    f"lead -> {method} @{res}" + (f" [{mode}]" if mode else ""),
+                    f"lead -> {method} @{res}" + (f" [{mode}]" if mode else "") + (" [manual-lock]" if blocked else ""),
                     sid,
                 ),
             )
@@ -343,11 +356,13 @@ def set_lead(
                     method,
                     json.dumps(cfg, ensure_ascii=True),
                     now,
-                    f"method -> {method}" + (f" [{mode}]" if mode else ""),
+                    f"method -> {method}" + (f" [{mode}]" if mode else "") + (" [manual-lock]" if blocked else ""),
                     sid,
                 ),
             )
             msg = f"ведущий метод изменён: {method}" + (f" · mode={mode}" if mode else "")
+        if blocked:
+            msg = f"manual-lock: отказ сменить метод Flash→оставлен {method}" + (f" @ {res}" if res else "")
         con.execute(
             "INSERT INTO live_1m_logs (session_id, created_at, level, message) VALUES (?, ?, 'info', ?)",
             (sid, now, msg),
@@ -359,6 +374,7 @@ def set_lead(
             "method": method,
             "resolution": res,
             "method_mode": cfg.get("method_mode") or "flash",
+            "blocked": blocked,
         }
     finally:
         con.close()

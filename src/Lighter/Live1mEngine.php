@@ -1441,6 +1441,7 @@ PROMPT;
         if (!is_array($sess) || ($sess['status'] ?? '') !== 'running') {
             return ['ok' => false, 'error' => 'no running emulation session', 'skipped' => true];
         }
+        $methodMode = self::methodModeFromSession($sess);
 
         $tickSec = max(10, (int) ($sess['tick_sec'] ?? 30));
         $lastTick = (int) ($sess['last_tick_at'] ?? 0);
@@ -1499,7 +1500,6 @@ PROMPT;
                 }
             }
             $methodPick = self::pickLeadWithFlash($cfg->dbPath(), $marketId, $frames, $method, $resolution);
-            $methodMode = self::methodModeFromSession($sess);
             if (!empty($methodPick['ok']) && !empty($methodPick['method'])) {
                 $pickedMethod = (string) $methodPick['method'];
                 $adviseTf = (string) ($methodPick['resolution'] ?? '');
@@ -1865,8 +1865,8 @@ PROMPT;
                 'fetch_ms' => round($fetchMs, 1),
                 'method' => $method,
                 'resolution' => $resolution,
-                'method_source' => self::methodModeFromSession($sess) === 'manual' ? 'manual' : 'deepseek-flash',
-                'method_mode' => self::methodModeFromSession($sess),
+                'method_source' => $methodMode === 'manual' ? 'manual' : 'deepseek-flash',
+                'method_mode' => $methodMode,
                 'method_pick' => $methodPick,
                 'prev_method_sig' => $prevMethod,
                 'impulse_sig' => $impulseSig,
