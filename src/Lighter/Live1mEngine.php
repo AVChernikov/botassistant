@@ -26,7 +26,7 @@ final class Live1mEngine
 
     /**
      * Fresh impulse on closed bar (± lookback) — ignore stale history.
-     * Deadzone-boundary signals are one-bar impulses; full-history "regime"
+     * Deadzone-boundary / MACD zero-cross signals are one-bar impulses; full-history "regime"
      * falsely opens trades on session start without a new cross.
      *
      * @param list<int|float|null> $signals
@@ -1636,23 +1636,35 @@ PROMPT;
         $inDeadzone = $indValue !== null && $deadzoneEps > 0
             && (float) $indValue >= $dzLo && (float) $indValue <= $dzHi;
         $indUnit = (string) ($zeroMeta['unit'] ?? '');
-        $boundNote = 'нет креста границы';
-        if ($indValue !== null && $prevInd !== null && $deadzoneEps > 0) {
-            if ($prevInd < $dzLo && (float) $indValue >= $dzLo) {
-                $boundNote = 'long: lo снизу↑';
-            } elseif ($prevInd > $dzHi && (float) $indValue <= $dzHi) {
-                $boundNote = 'short: hi сверху↓';
-            } elseif ($inDeadzone) {
-                $boundNote = 'внутри зоны';
-            } elseif ((float) $indValue > $dzHi) {
-                $boundNote = 'выше hi';
+        $boundNote = $deadzoneEps > 0 ? 'нет креста границы' : 'нет креста нуля';
+        if ($indValue !== null && $prevInd !== null) {
+            if ($deadzoneEps > 0) {
+                if ($prevInd < $dzLo && (float) $indValue >= $dzLo) {
+                    $boundNote = 'long: lo снизу↑';
+                } elseif ($prevInd > $dzHi && (float) $indValue <= $dzHi) {
+                    $boundNote = 'short: hi сверху↓';
+                } elseif ($inDeadzone) {
+                    $boundNote = 'внутри зоны';
+                } elseif ((float) $indValue > $dzHi) {
+                    $boundNote = 'выше hi';
+                } else {
+                    $boundNote = 'ниже lo';
+                }
+            } elseif ($prevInd <= 0.0 && (float) $indValue > 0.0) {
+                $boundNote = 'long: 0 снизу↑';
+            } elseif ($prevInd >= 0.0 && (float) $indValue < 0.0) {
+                $boundNote = 'short: 0 сверху↓';
+            } elseif ((float) $indValue > 0.0) {
+                $boundNote = 'выше 0';
+            } elseif ((float) $indValue < 0.0) {
+                $boundNote = 'ниже 0';
             } else {
-                $boundNote = 'ниже lo';
+                $boundNote = 'на нуле';
             }
         }
         $epsLabel = $deadzoneEps > 0
             ? sprintf('[%.4g…%.4g] base±%.4g bias%+.2f', $dzLo, $dzHi, $deadzoneEps, $dzBias)
-            : '0';
+            : '0 (MACD zero-cross)';
         $logs[] = [
             'level' => 'info',
             'message' => sprintf(
@@ -1662,7 +1674,9 @@ PROMPT;
                 $indValue === null ? 'n/a' : sprintf('%.5f', $indValue),
                 $epsLabel,
                 $indUnit !== '' ? '(' . $indUnit . ')' : '',
-                $indValue === null ? 'нет значения' : ($inDeadzone ? 'в мёртвой зоне' : 'вне мёртвой зоны'),
+                $deadzoneEps > 0
+                    ? ($indValue === null ? 'нет значения' : ($inDeadzone ? 'в мёртвой зоне' : 'вне мёртвой зоны'))
+                    : 'без мёртвой зоны',
                 $boundNote,
                 $impulseSig
             ),
@@ -1760,7 +1774,7 @@ PROMPT;
             }
         }
 
-        // Trade only on a fresh deadzone-boundary impulse (closed bar ±1).
+        // Trade on fresh impulse (closed bar ±1): deadzone edges, or MACD zero-cross.
         // Inverse: +1 → short, −1 → long (against indicator).
         if ($status === 'running' && $action === 'hold') {
             $tradeImpulse = $tradeMode === 'inverse' ? -$impulseSig : $impulseSig;
@@ -1795,6 +1809,8 @@ PROMPT;
                 }
             }
 
+            $longWhy = $deadzoneEps > 0 ? 'deadzone lo↑ long' : 'zero↑ long';
+            $shortWhy = $deadzoneEps > 0 ? 'deadzone hi↓ short' : 'zero↓ short';
             if ($wideSpread) {
                 $action = 'skip_spread';
                 $reason = sprintf('spread %.1f bps too wide', $spreadBps);
@@ -1807,7 +1823,7 @@ PROMPT;
                 }
                 if ($side !== 'long') {
                     [$side, $size, $entry, $entryTs, $tp, $sl, $fees, $tradesCount, $tr] = self::openPaper(
-                        'long', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, 'deadzone lo↑ long', $tradesCount,
+                        'long', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, $longWhy, $tradesCount,
                         $tpLevels, $slLevels
                     );
                     $trades[] = $tr;
@@ -1815,8 +1831,7 @@ PROMPT;
                     $uPnl = 0.0;
                     $sessionPnl = $realized;
                     $action = 'open_long';
-                    $reason = ($tradeMode === 'inverse' ? 'INV · ' : '')
-                        . 'deadzone lo↑ long'
+                    $reason = ($tradeMode === 'inverse' ? 'INV · ' : '') . $longWhy
                         . ($deadzoneEps > 0 ? sprintf(' ([%.4g…%.4g])', $dzLo, $dzHi) : '');
                 }
             } elseif ($crossShort) {
@@ -1828,7 +1843,7 @@ PROMPT;
                 }
                 if ($side !== 'short') {
                     [$side, $size, $entry, $entryTs, $tp, $sl, $fees, $tradesCount, $tr] = self::openPaper(
-                        'short', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, 'deadzone hi↓ short', $tradesCount,
+                        'short', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, $shortWhy, $tradesCount,
                         $tpLevels, $slLevels
                     );
                     $trades[] = $tr;
@@ -1836,16 +1851,15 @@ PROMPT;
                     $uPnl = 0.0;
                     $sessionPnl = $realized;
                     $action = 'open_short';
-                    $reason = ($tradeMode === 'inverse' ? 'INV · ' : '')
-                        . 'deadzone hi↓ short'
+                    $reason = ($tradeMode === 'inverse' ? 'INV · ' : '') . $shortWhy
                         . ($deadzoneEps > 0 ? sprintf(' ([%.4g…%.4g])', $dzLo, $dzHi) : '');
                 }
             } else {
                 $action = $side ? 'hold_pos' : 'flat';
                 if ($side) {
-                    $reason = 'in position, ждём lo↑ / hi↓';
+                    $reason = $deadzoneEps > 0 ? 'in position, ждём lo↑ / hi↓' : 'in position, ждём zero-cross';
                 } else {
-                    $reason = 'нет свежего креста границы (lo↑ / hi↓)';
+                    $reason = $deadzoneEps > 0 ? 'нет свежего креста границы (lo↑ / hi↓)' : 'нет свежего zero-cross';
                 }
                 if ($deadzoneEps > 0) {
                     $reason .= sprintf(' · [%.4g…%.4g]', $dzLo, $dzHi);
@@ -1917,7 +1931,7 @@ PROMPT;
                 'deadzone_hi' => $deadzoneEps > 0 ? $dzHi : null,
                 'deadzone_bias' => $deadzoneEps > 0 ? $dzBias : null,
                 'indicator_value' => $indValue,
-                'in_deadzone' => $inDeadzone,
+                'in_deadzone' => $deadzoneEps > 0 ? $inDeadzone : null,
                 'signal_bar' => 'closed',
                 'candles' => count($candles),
                 'live' => true,

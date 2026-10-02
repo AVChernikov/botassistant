@@ -551,12 +551,12 @@ final class TechnicalAnalysis
             }
         }
         $lastPx = (float) ($closes[$n - 1] ?? 0);
+        // MACD: pure zero-cross (no deadzone). Others: trend-skewed deadzone edges.
+        $macdSig = self::zeroCrossSignals($macdHist);
         $rocLv = self::deadzoneLevelsByTrend($roc, $closes, null, true);
-        $macdLv = self::deadzoneLevelsByTrend($macdHist, $closes, self::priceDiffDeadzone($macdHist, $lastPx));
         $smaLv = self::deadzoneLevelsByTrend($smaDiff, $closes, self::priceDiffDeadzone($smaDiff, $lastPx));
         $emaLv = self::deadzoneLevelsByTrend($emaDiff, $closes, self::priceDiffDeadzone($emaDiff, $lastPx));
         $momLv = self::deadzoneLevelsByTrend($mom, $closes, self::priceDiffDeadzone($mom, $lastPx));
-        $macdSig = self::deadzoneBoundarySignals($macdHist, $macdLv['lo'], $macdLv['hi']);
         $smaSig = self::deadzoneBoundarySignals($smaDiff, $smaLv['lo'], $smaLv['hi']);
         $emaSig = self::deadzoneBoundarySignals($emaDiff, $emaLv['lo'], $emaLv['hi']);
         $rocSig = self::deadzoneBoundarySignals($roc, $rocLv['lo'], $rocLv['hi']);
@@ -751,7 +751,8 @@ final class TechnicalAnalysis
     }
 
     /**
-     * Raw zero-cross series + eps for a method (for logs / charts).
+     * Raw zero-cross / deadzone series + eps for a method (for logs / charts).
+     * MACD has no deadzone (eps=0); others use vol + trend skew.
      *
      * @param list<array<string, mixed>> $candles
      * @return array{series: list<float|null>, eps: float, value: float|null, unit: string}
@@ -764,6 +765,7 @@ final class TechnicalAnalysis
         $series = array_fill(0, $n, null);
         $eps = 0.0;
         $unit = 'abs';
+        $noDeadzone = $method === 'MACD(12,26,9) cross';
 
         if ($method === 'ROC(10) zero-cross') {
             $series = self::roc($closes, 10);
@@ -776,7 +778,6 @@ final class TechnicalAnalysis
                     $series[$i] = (float) $m['macd'][$i] - (float) $m['signal'][$i];
                 }
             }
-            $eps = self::priceDiffDeadzone($series, $price);
             $unit = 'price';
         } elseif ($method === 'SMA(10/30) cross') {
             $f = self::sma($closes, 10);
@@ -806,7 +807,7 @@ final class TechnicalAnalysis
             $unit = 'price';
         }
 
-        $levels = $eps > 0
+        $levels = (!$noDeadzone && $eps > 0)
             ? self::deadzoneLevelsByTrend(
                 $series,
                 $closes,
@@ -820,7 +821,7 @@ final class TechnicalAnalysis
 
         return [
             'series' => $series,
-            'eps' => $eps,
+            'eps' => $noDeadzone ? 0.0 : $eps,
             'lo' => (float) $levels['lo'],
             'hi' => (float) $levels['hi'],
             'bias' => (float) $levels['bias'],
@@ -902,12 +903,34 @@ final class TechnicalAnalysis
     }
 
     /**
-     * Deadzone boundary crosses (not zero-cross):
-     * +1 long  — cross lower bound (lo, default −eps) from below upward
-     * -1 short — cross upper bound (hi, default +eps) from above downward
+     * Pure zero-cross: +1 when series crosses above 0, −1 when crosses below 0.
      *
      * @param list<float|null> $values
-     * @param float $epsOrLo symmetric eps, or lower bound when $hi is set
+     * @return list<int>
+     */
+    public static function zeroCrossSignals(array $values): array
+    {
+        $n = count($values);
+        $sig = array_fill(0, $n, 0);
+        for ($i = 1; $i < $n; $i++) {
+            if ($values[$i] === null || $values[$i - 1] === null) {
+                continue;
+            }
+            $prev = (float) $values[$i - 1];
+            $curr = (float) $values[$i];
+            if ($prev <= 0.0 && $curr > 0.0) {
+                $sig[$i] = 1;
+            } elseif ($prev >= 0.0 && $curr < 0.0) {
+                $sig[$i] = -1;
+            }
+        }
+
+        return $sig;
+    }
+
+    /**
+     * @deprecated unused for MACD (zero-cross); other methods still use deadzoneBoundarySignals
+     * @param list<float|null> $values
      */
     public static function deadzoneBoundarySignals(array $values, float $epsOrLo, ?float $hi = null): array
     {
@@ -940,9 +963,13 @@ final class TechnicalAnalysis
         return $sig;
     }
 
-    /** @deprecated use deadzoneBoundarySignals */
+    /** @deprecated use zeroCrossSignals */
     public static function hysteresisZeroSignals(array $values, float $eps): array
     {
+        if ($eps <= 0.0) {
+            return self::zeroCrossSignals($values);
+        }
+
         return self::deadzoneBoundarySignals($values, $eps);
     }
 
@@ -959,22 +986,13 @@ final class TechnicalAnalysis
         return match ($method) {
             'MACD(12,26,9) cross' => (static function () use ($closes): array {
                 $m = self::macd($closes);
-                $n = count($closes);
-                $hist = $m['hist'];
-                $price = (float) ($closes[$n - 1] ?? 0);
-                $eps = self::priceDiffDeadzone($hist, $price);
-                $lv = self::deadzoneLevelsByTrend($hist, $closes, $eps);
-                $extra = self::deadzoneChartExtras($hist, $eps, 'med|hist|', $lv['lo'], $lv['hi'], $lv['bias']);
                 return [
                     'lines' => [
                         ['name' => 'MACD', 'color' => '#1f4b7a', 'values' => $m['macd']],
                         ['name' => 'Signal', 'color' => '#c45c26', 'values' => $m['signal']],
                     ],
-                    'hist' => $hist,
-                    'levels' => $extra['levels'],
-                    'bands' => $extra['bands'],
-                    'deadzone_eps' => $extra['deadzone_eps'],
-                    'vol_median' => $extra['vol_median'],
+                    'hist' => $m['hist'],
+                    'levels' => [0.0],
                 ];
             })(),
             'RSI(14) 30/70' => [
