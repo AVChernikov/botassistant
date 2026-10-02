@@ -91,6 +91,10 @@ PROMPT;
         if (!in_array($methodMode, ['flash', 'manual'], true)) {
             $methodMode = 'flash';
         }
+        $tradeMode = strtolower((string) ($opts['trade_mode'] ?? 'normal'));
+        if (!in_array($tradeMode, ['normal', 'inverse'], true)) {
+            $tradeMode = 'normal';
+        }
 
         $start = Live1mStore::start($cfg->dbPath(), [
             'market_id' => $marketId,
@@ -108,6 +112,7 @@ PROMPT;
             'kill_hi' => (float) ($opts['kill_hi'] ?? 100),
             'method_mode' => $methodMode,
             'method_source' => $methodMode === 'manual' ? 'manual' : 'deepseek-flash',
+            'trade_mode' => $tradeMode,
         ]);
         if (empty($start['ok'])) {
             return $start;
@@ -772,9 +777,9 @@ PROMPT;
     /**
      * @return array<string, mixed>
      */
-    public static function status(IndicatorConfig $cfg, ?int $sessionId = null): array
+    public static function status(IndicatorConfig $cfg, ?int $sessionId = null, int $ticks = 40, int $trades = 30): array
     {
-        $out = Live1mStore::status($cfg->dbPath(), $sessionId);
+        $out = Live1mStore::status($cfg->dbPath(), $sessionId, $ticks, $trades);
         $running = is_array($out['session'] ?? null) && ($out['session']['status'] ?? '') === 'running';
         $root = dirname(__DIR__, 2);
         $pidFile = $root . DIRECTORY_SEPARATOR . 'mcp-lighter' . DIRECTORY_SEPARATOR . '_live_1m_loop.pid';
@@ -807,21 +812,51 @@ PROMPT;
     }
 
     /** @param array<string, mixed> $sess */
-    private static function methodModeFromSession(array $sess): string
+    private static function sessionCfg(array $sess): array
     {
         $raw = $sess['config_json'] ?? null;
-        $cfg = [];
         if (is_string($raw) && $raw !== '') {
             $decoded = json_decode($raw, true);
             if (is_array($decoded)) {
-                $cfg = $decoded;
+                return $decoded;
             }
-        } elseif (is_array($raw)) {
-            $cfg = $raw;
         }
-        $mode = strtolower((string) ($cfg['method_mode'] ?? 'flash'));
+        if (is_array($raw)) {
+            return $raw;
+        }
+
+        return [];
+    }
+
+    /** @param array<string, mixed> $sess */
+    private static function methodModeFromSession(array $sess): string
+    {
+        $mode = strtolower((string) (self::sessionCfg($sess)['method_mode'] ?? 'flash'));
 
         return in_array($mode, ['flash', 'manual'], true) ? $mode : 'flash';
+    }
+
+    /** @param array<string, mixed> $sess */
+    private static function tradeModeFromSession(array $sess): string
+    {
+        $mode = strtolower((string) (self::sessionCfg($sess)['trade_mode'] ?? 'normal'));
+
+        return in_array($mode, ['normal', 'inverse'], true) ? $mode : 'normal';
+    }
+
+    /**
+     * Live entry direction: normal (follow impulse) or inverse (against).
+     *
+     * @return array<string, mixed>
+     */
+    public static function setTradeMode(IndicatorConfig $cfg, string $tradeMode, ?int $sessionId = null): array
+    {
+        $mode = strtolower(trim($tradeMode));
+        if (!in_array($mode, ['normal', 'inverse'], true)) {
+            return ['ok' => false, 'error' => 'trade_mode must be normal|inverse'];
+        }
+
+        return Live1mStore::setTradeMode($cfg->dbPath(), $mode, $sessionId);
     }
 
     /**
@@ -1442,6 +1477,7 @@ PROMPT;
             return ['ok' => false, 'error' => 'no running emulation session', 'skipped' => true];
         }
         $methodMode = self::methodModeFromSession($sess);
+        $tradeMode = self::tradeModeFromSession($sess);
 
         $tickSec = max(10, (int) ($sess['tick_sec'] ?? 30));
         $lastTick = (int) ($sess['last_tick_at'] ?? 0);
@@ -1725,9 +1761,11 @@ PROMPT;
         }
 
         // Trade only on a fresh deadzone-boundary impulse (closed bar ±1).
+        // Inverse: +1 → short, −1 → long (against indicator).
         if ($status === 'running' && $action === 'hold') {
-            $crossLong = $impulseSig > 0 && $side !== 'long';
-            $crossShort = $impulseSig < 0 && $side !== 'short';
+            $tradeImpulse = $tradeMode === 'inverse' ? -$impulseSig : $impulseSig;
+            $crossLong = $tradeImpulse > 0 && $side !== 'long';
+            $crossShort = $tradeImpulse < 0 && $side !== 'short';
             $wideSpread = $spreadBps !== null && $spreadBps > 25.0;
             $willTrade = !$wideSpread && ($crossLong || $crossShort);
             $reconcile = null;
@@ -1777,7 +1815,8 @@ PROMPT;
                     $uPnl = 0.0;
                     $sessionPnl = $realized;
                     $action = 'open_long';
-                    $reason = 'deadzone lo↑ long'
+                    $reason = ($tradeMode === 'inverse' ? 'INV · ' : '')
+                        . 'deadzone lo↑ long'
                         . ($deadzoneEps > 0 ? sprintf(' ([%.4g…%.4g])', $dzLo, $dzHi) : '');
                 }
             } elseif ($crossShort) {
@@ -1797,7 +1836,8 @@ PROMPT;
                     $uPnl = 0.0;
                     $sessionPnl = $realized;
                     $action = 'open_short';
-                    $reason = 'deadzone hi↓ short'
+                    $reason = ($tradeMode === 'inverse' ? 'INV · ' : '')
+                        . 'deadzone hi↓ short'
                         . ($deadzoneEps > 0 ? sprintf(' ([%.4g…%.4g])', $dzLo, $dzHi) : '');
                 }
             } else {
@@ -1870,6 +1910,8 @@ PROMPT;
                 'method_pick' => $methodPick,
                 'prev_method_sig' => $prevMethod,
                 'impulse_sig' => $impulseSig,
+                'trade_impulse' => $tradeMode === 'inverse' ? -$impulseSig : $impulseSig,
+                'trade_mode' => $tradeMode,
                 'deadzone_eps' => $deadzoneEps > 0 ? $deadzoneEps : null,
                 'deadzone_lo' => $deadzoneEps > 0 ? $dzLo : null,
                 'deadzone_hi' => $deadzoneEps > 0 ? $dzHi : null,

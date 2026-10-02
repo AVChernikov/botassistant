@@ -301,7 +301,12 @@
         <button type="button" class="tf-btn" data-mode="manual" data-method="Bollinger(20,2) bounce">BB</button>
         <button type="button" class="tf-btn" data-mode="manual" data-method="Momentum(10) flip">Mom</button>
       </div>
-      <p class="note"><b style="color:var(--ask)">REAL ORDERS.</b> Метод: <b>Flash</b> или ручной индикатор (ниже). Лот под графиком (50…400). DeepSeek Pro — отдельный лот. На одном аккаунте они <b>складываются</b> в net. <b>Стоп</b> закрывает все позиции на аккаунте, снимает все ордера и делает повторную проверку. Эмуляция: <a href="sim-1m.php">sim-1m</a>.</p>
+      <div class="method-switch" id="tradeModeSwitch" title="Normal — вход по импульсу индикатора; Inverse — против импульса (реальное LIVE)">
+        <span class="lab">вход</span>
+        <button type="button" class="tf-btn active" data-trade-mode="normal">Normal</button>
+        <button type="button" class="tf-btn" data-trade-mode="inverse">Inverse</button>
+      </div>
+      <p class="note"><b style="color:var(--ask)">REAL ORDERS.</b> Метод: <b>Flash</b> или ручной индикатор. <b>Inverse</b> — LIVE открывает против импульса (+1→short, −1→long). Лот под графиком (50…400). DeepSeek Pro — отдельный лот. На одном аккаунте они <b>складываются</b> в net. <b>Стоп</b> закрывает все позиции на аккаунте, снимает все ордера и делает повторную проверку. Эмуляция: <a href="sim-1m.php">sim-1m</a>. Бумажный инверс под логом всегда против индикатора (сравнение).</p>
       <div class="stats" id="stats"></div>
     </div>
 
@@ -333,6 +338,21 @@
     <div class="panel">
       <h2>Лог</h2>
       <div id="logs" class="mono" style="font-size:0.82rem;max-height:160px;overflow:auto;color:var(--muted)">—</div>
+    </div>
+
+    <div class="section-label">inverse paper (против сигналов)</div>
+    <div class="panel" id="invPanel">
+      <p class="note" style="margin-top:0">Paper only: вход против <code>impulse_sig</code>, те же лот/TP/SL/fees. Биржу не трогает. Сброс при смене session.</p>
+      <div class="stats" id="invStats"></div>
+      <p class="muted" id="invCompare" style="margin:0.55rem 0 0.65rem;font-size:0.85rem">—</p>
+      <div style="overflow:auto;max-height:220px">
+        <table>
+          <thead>
+            <tr><th>время</th><th>act</th><th>side</th><th>px</th><th>лот$</th><th>pnl</th></tr>
+          </thead>
+          <tbody id="invTradesBody"><tr><td colspan="6" class="muted">нет сделок</td></tr></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -384,6 +404,7 @@
     let selectedTf = '1m';
     let selectedMethodMode = 'flash';
     let selectedMethod = 'ROC(10) zero-cross';
+    let selectedTradeMode = 'normal';
     try {
       const tfSaved = localStorage.getItem('live_1m_tf');
       if (TF_OPTS.includes(tfSaved)) selectedTf = tfSaved;
@@ -391,12 +412,218 @@
       if (mm === 'flash' || mm === 'manual') selectedMethodMode = mm;
       const mSaved = localStorage.getItem('live_1m_method');
       if (METHOD_OPTS.includes(mSaved)) selectedMethod = mSaved;
+      const tm = localStorage.getItem('live_1m_trade_mode');
+      if (tm === 'normal' || tm === 'inverse') selectedTradeMode = tm;
     } catch (_) {}
     let lastEntry = null;
     let lastSide = null;
     let lastMark = null;
     let lastTp = null;
     let lastSl = null;
+
+    const INV_FEE_BPS = 2.0;
+    const INV_KILL_LO = -50;
+    const INV_KILL_HI = 100;
+
+    function emptyInvState(sid) {
+      return {
+        session_id: sid || null,
+        side: null,
+        entry: null,
+        lot: 200,
+        tp: null,
+        sl: null,
+        realized: 0,
+        fees: 0,
+        trades: [],
+        last_tick_id: 0,
+        stopped: false,
+      };
+    }
+
+    let invState = emptyInvState(null);
+
+    function invLevels(price, side, tpPct, slPct) {
+      const tp = side === 'long' ? price * (1 + tpPct / 100) : price * (1 - tpPct / 100);
+      const sl = side === 'long' ? price * (1 - slPct / 100) : price * (1 + slPct / 100);
+      return { tp, sl };
+    }
+
+    function invClose(price, reason, ts) {
+      if (!invState.side || !invState.entry) return;
+      const dir = invState.side === 'short' ? -1 : 1;
+      const lot = Number(invState.lot) || 200;
+      const pnlGross = ((price - invState.entry) / invState.entry) * lot * dir;
+      const fee = lot * (INV_FEE_BPS / 10000);
+      const pnl = pnlGross - fee;
+      invState.fees += fee;
+      invState.realized += pnl;
+      invState.trades.push({
+        t: ts,
+        action: 'close',
+        side: invState.side,
+        price,
+        lot,
+        pnl,
+        reason,
+      });
+      invState.side = null;
+      invState.entry = null;
+      invState.tp = null;
+      invState.sl = null;
+    }
+
+    function invOpen(side, price, lot, tpPct, slPct, reason, ts) {
+      const fee = lot * (INV_FEE_BPS / 10000);
+      invState.fees += fee;
+      invState.realized -= fee;
+      const lv = invLevels(price, side, tpPct, slPct);
+      invState.side = side;
+      invState.entry = price;
+      invState.lot = lot;
+      invState.tp = lv.tp;
+      invState.sl = lv.sl;
+      invState.trades.push({
+        t: ts,
+        action: 'open',
+        side,
+        price,
+        lot,
+        pnl: -fee,
+        reason,
+      });
+    }
+
+    function invUPnl(mark) {
+      if (!invState.side || !invState.entry || !(mark > 0)) return 0;
+      const dir = invState.side === 'short' ? -1 : 1;
+      const lot = Number(invState.lot) || 200;
+      return ((mark - invState.entry) / invState.entry) * lot * dir;
+    }
+
+    function invSessionPnl(mark) {
+      return invState.realized + invUPnl(mark);
+    }
+
+    function feedInverseTick(tick, opts) {
+      if (!tick || invState.stopped) return;
+      const tid = Number(tick.id || 0);
+      if (tid && tid <= Number(invState.last_tick_id || 0)) return;
+      const price = Number(tick.price);
+      if (!(price > 0)) return;
+      const ts = tick.created_at || tick.bar_ts || 0;
+      const lot = Number(opts.lot) || 200;
+      const tpPct = Number(opts.tpPct);
+      const slPct = Number(opts.slPct);
+      const payload = tick.payload && typeof tick.payload === 'object' ? tick.payload : {};
+      let impulse = payload.impulse_sig != null ? Number(payload.impulse_sig) : Number(tick.method_sig);
+      if (!Number.isFinite(impulse)) impulse = 0;
+
+      // TP / SL on mark
+      if (invState.side && invState.entry) {
+        if (invState.side === 'long') {
+          if (invState.tp != null && price >= invState.tp) invClose(price, 'tp', ts);
+          else if (invState.sl != null && price <= invState.sl) invClose(price, 'sl', ts);
+        } else if (invState.side === 'short') {
+          if (invState.tp != null && price <= invState.tp) invClose(price, 'tp', ts);
+          else if (invState.sl != null && price >= invState.sl) invClose(price, 'sl', ts);
+        }
+      }
+
+      let sessPnl = invSessionPnl(price);
+      if (!invState.stopped && (sessPnl <= INV_KILL_LO || sessPnl >= INV_KILL_HI)) {
+        if (invState.side) invClose(price, sessPnl <= INV_KILL_LO ? 'kill_lo' : 'kill_hi', ts);
+        invState.stopped = true;
+        if (tid) invState.last_tick_id = tid;
+        return;
+      }
+
+      // Opposite to live impulse: +1 → short, -1 → long
+      if (impulse > 0) {
+        const want = 'short';
+        if (invState.side !== want) {
+          if (invState.side) invClose(price, 'flip_to_short', ts);
+          if (!invState.stopped) invOpen(want, price, lot, tpPct, slPct, 'inv impulse+1→short', ts);
+        }
+      } else if (impulse < 0) {
+        const want = 'long';
+        if (invState.side !== want) {
+          if (invState.side) invClose(price, 'flip_to_long', ts);
+          if (!invState.stopped) invOpen(want, price, lot, tpPct, slPct, 'inv impulse-1→long', ts);
+        }
+      }
+
+      sessPnl = invSessionPnl(price);
+      if (!invState.stopped && (sessPnl <= INV_KILL_LO || sessPnl >= INV_KILL_HI)) {
+        if (invState.side) invClose(price, sessPnl <= INV_KILL_LO ? 'kill_lo' : 'kill_hi', ts);
+        invState.stopped = true;
+      }
+      if (tid) invState.last_tick_id = tid;
+    }
+
+    function replayInverseFromTicks(ticks, sess) {
+      const sid = sess && sess.id != null ? Number(sess.id) : null;
+      if (!sid) {
+        invState = emptyInvState(null);
+        renderInverse(sess, null);
+        return;
+      }
+      const lot = Number(sess.lot_usd != null ? sess.lot_usd : levelsState.lot) || 200;
+      const tpPct = Number(levelsState.tp != null ? levelsState.tp : sess.tp_pct) || 30;
+      const slPct = Number(levelsState.sl != null ? levelsState.sl : sess.sl_pct) || 30;
+      // Full replay each refresh (status window may grow); keep stops across same session.
+      invState = emptyInvState(sid);
+      const chrono = (ticks || []).slice().reverse(); // API newest-first
+      for (const t of chrono) {
+        feedInverseTick(t, { lot, tpPct, slPct });
+      }
+      const mark = chrono.length ? Number(chrono[chrono.length - 1].price) : lastMark;
+      renderInverse(sess, mark);
+    }
+
+    function renderInverse(sess, mark) {
+      const stats = $('invStats');
+      const body = $('invTradesBody');
+      const cmp = $('invCompare');
+      if (!stats || !body) return;
+      if (!invState.session_id) {
+        stats.innerHTML = '';
+        body.innerHTML = '<tr><td colspan="6" class="muted">нет сессии</td></tr>';
+        if (cmp) cmp.textContent = '—';
+        return;
+      }
+      const m = mark != null && Number.isFinite(Number(mark)) ? Number(mark) : lastMark;
+      const u = invUPnl(m);
+      const sp = invSessionPnl(m);
+      const pos = invState.side
+        ? `${invState.side} @ ${fmt(invState.entry, 4)} · tp ${fmt(invState.tp, 4)} / sl ${fmt(invState.sl, 4)}`
+        : (invState.stopped ? 'stopped flat' : 'flat');
+      stats.innerHTML = `
+        <div class="stat"><div class="k">inv session PnL</div><div class="v ${clsPnL(sp)}">${fmt(sp)}$</div></div>
+        <div class="stat"><div class="k">inv realized</div><div class="v ${clsPnL(invState.realized)}">${fmt(invState.realized)}$</div></div>
+        <div class="stat"><div class="k">inv fees</div><div class="v">${fmt(invState.fees)}$</div></div>
+        <div class="stat"><div class="k">inv uPnL</div><div class="v ${clsPnL(u)}">${fmt(u)}$</div></div>
+        <div class="stat"><div class="k">inv position</div><div class="v" style="font-size:0.9rem">${pos}</div></div>
+        <div class="stat"><div class="k">inv trades</div><div class="v">${invState.trades.length}${invState.stopped ? ' · kill' : ''}</div></div>
+      `;
+      const rows = invState.trades.slice().reverse();
+      body.innerHTML = rows.length
+        ? rows.map((t) => `<tr>
+            <td class="mono">${ts(t.t)}</td>
+            <td>${t.action}<div class="muted">${t.reason || ''}</div></td>
+            <td>${t.side || '—'}</td>
+            <td class="mono">${fmt(t.price, 4)}</td>
+            <td class="mono">${fmt(t.lot, 0)}</td>
+            <td class="mono ${clsPnL(t.pnl)}">${fmt(t.pnl)}</td>
+          </tr>`).join('')
+        : '<tr><td colspan="6" class="muted">нет сделок (ждём impulse)</td></tr>';
+      if (cmp) {
+        const live = sess && sess.session_pnl != null ? Number(sess.session_pnl) : null;
+        cmp.innerHTML = live == null
+          ? `inverse PnL <b class="${clsPnL(sp)}">${fmt(sp)}$</b>`
+          : `live PnL <b class="${clsPnL(live)}">${fmt(live)}$</b> · inverse <b class="${clsPnL(sp)}">${fmt(sp)}$</b> · Δ <b class="${clsPnL(sp - live)}">${fmt(sp - live)}$</b>`;
+      }
+    }
 
     const $ = (id) => document.getElementById(id);
     const fmt = (n, d = 2) => (n == null || Number.isNaN(Number(n))) ? '—' : Number(n).toFixed(d);
@@ -432,6 +659,41 @@
         });
         if (!res.ok) {
           alert(res.error || 'не удалось сменить ТФ');
+          return;
+        }
+        await refresh();
+      } catch (e) {
+        alert(String(e.message || e));
+      } finally {
+        btns.forEach((b) => { b.disabled = false; });
+      }
+    }
+
+    function syncTradeModeUi(mode) {
+      if (mode === 'normal' || mode === 'inverse') selectedTradeMode = mode;
+      try { localStorage.setItem('live_1m_trade_mode', selectedTradeMode); } catch (_) {}
+      document.querySelectorAll('#tradeModeSwitch .tf-btn').forEach((btn) => {
+        btn.classList.toggle('active', btn.getAttribute('data-trade-mode') === selectedTradeMode);
+      });
+      const pill = $('modePill');
+      if (pill) {
+        pill.textContent = selectedTradeMode === 'inverse' ? 'режим: LIVE · INV' : 'режим: LIVE';
+      }
+    }
+
+    async function applyTradeMode(mode) {
+      if (mode !== 'normal' && mode !== 'inverse') return;
+      syncTradeModeUi(mode);
+      if (!sessionId) return;
+      const btns = document.querySelectorAll('#tradeModeSwitch .tf-btn');
+      btns.forEach((b) => { b.disabled = true; });
+      try {
+        const res = await api('live_1m_set_trade_mode', {
+          session_id: String(sessionId),
+          trade_mode: mode,
+        });
+        if (!res.ok) {
+          alert(res.error || 'не удалось сменить режим входа');
           return;
         }
         await refresh();
@@ -692,6 +954,7 @@
         $('stats').innerHTML = '';
         $('metaLine').textContent = 'session —';
         setRunUi(false);
+        replayInverseFromTicks([], null);
         return;
       }
       sessionId = s.id;
@@ -731,6 +994,10 @@
         ? cfg.method_mode
         : selectedMethodMode;
       syncMethodUi(modeFromSess, leadingMethod);
+      const tmFromSess = (cfg.trade_mode === 'inverse' || cfg.trade_mode === 'normal')
+        ? cfg.trade_mode
+        : selectedTradeMode;
+      syncTradeModeUi(tmFromSess);
       const methodPill = $('methodPill');
       if (methodPill) {
         const short = METHOD_SHORT[leadingMethod] || leadingMethod;
@@ -784,6 +1051,8 @@
       $('logs').innerHTML = logs.length
         ? logs.map(l => `${ts(l.created_at)} [${l.level}] ${l.message}`).join('<br>')
         : '—';
+
+      replayInverseFromTicks(ticks, s);
     }
 
     async function api(action, params = {}) {
@@ -860,7 +1129,7 @@
     }
 
     async function refresh() {
-      const data = await api('live_1m_status', sessionId ? { session_id: String(sessionId) } : {});
+      const data = await api('live_1m_status', sessionId ? { session_id: String(sessionId), ticks: '200' } : { ticks: '200' });
       if (data.ok) renderStatus(data);
       await refreshExchangeOfficial();
     }
@@ -870,7 +1139,7 @@
       try {
         // Background live_1m_loop.php places orders. Browser only polls status
         // when the loop is alive — avoids double flip (2× size on Lighter).
-        const st = await api('live_1m_status', sessionId ? { session_id: String(sessionId) } : {});
+        const st = await api('live_1m_status', sessionId ? { session_id: String(sessionId), ticks: '200' } : { ticks: '200' });
         if (st.ok) renderStatus(st);
         const loopAlive = !!(st.loop && st.loop.alive);
         if (!loopAlive) {
@@ -903,6 +1172,7 @@
           resolution: selectedTf || '1m',
           method: selectedMethod || 'ROC(10) zero-cross',
           method_mode: selectedMethodMode || 'flash',
+          trade_mode: selectedTradeMode || 'normal',
           tp_levels: JSON.stringify([levelsState.tp]),
           sl_levels: JSON.stringify([levelsState.sl]),
         });
@@ -1094,6 +1364,7 @@
     buildLevelsUi();
     syncTfUi(selectedTf);
     syncMethodUi(selectedMethodMode, selectedMethod);
+    syncTradeModeUi(selectedTradeMode);
     document.querySelectorAll('#tfSwitch .tf-btn').forEach((btn) => {
       btn.addEventListener('click', () => applyTf(btn.getAttribute('data-tf')));
     });
@@ -1101,6 +1372,9 @@
       btn.addEventListener('click', () => {
         applyMethod(btn.getAttribute('data-mode'), btn.getAttribute('data-method') || '');
       });
+    });
+    document.querySelectorAll('#tradeModeSwitch .tf-btn').forEach((btn) => {
+      btn.addEventListener('click', () => applyTradeMode(btn.getAttribute('data-trade-mode')));
     });
     refreshExchangeOfficial();
     boot();

@@ -639,6 +639,7 @@ try {
                 'method' => (string) ($_GET['method'] ?? $_POST['method'] ?? 'ROC(10) zero-cross'),
                 'method_mode' => (string) ($_GET['method_mode'] ?? $_POST['method_mode'] ?? 'flash'),
                 'resolution' => (string) ($_GET['resolution'] ?? $_POST['resolution'] ?? '1m'),
+                'trade_mode' => (string) ($_GET['trade_mode'] ?? $_POST['trade_mode'] ?? 'normal'),
                 'tp_levels' => json_decode((string) ($_GET['tp_levels'] ?? $_POST['tp_levels'] ?? '[50]'), true) ?: [50],
                 'sl_levels' => json_decode((string) ($_GET['sl_levels'] ?? $_POST['sl_levels'] ?? '[30]'), true) ?: [30],
             ];
@@ -717,7 +718,11 @@ try {
         case 'live_1m_status':
             $cfg = IndicatorConfig::load();
             $sid = filter_var($_GET['session_id'] ?? null, FILTER_VALIDATE_INT);
-            jsonOut(Live1mEngine::status($cfg, $sid === false ? null : $sid));
+            $ticks = filter_var($_GET['ticks'] ?? 40, FILTER_VALIDATE_INT);
+            $trades = filter_var($_GET['trades'] ?? 30, FILTER_VALIDATE_INT);
+            $ticks = $ticks === false ? 40 : max(5, min(200, $ticks));
+            $trades = $trades === false ? 30 : max(5, min(200, $trades));
+            jsonOut(Live1mEngine::status($cfg, $sid === false ? null : $sid, $ticks, $trades));
 
         case 'live_1m_set_method':
             $cfg = IndicatorConfig::load();
@@ -735,6 +740,13 @@ try {
                 $sid === false ? null : $sid,
                 $mode !== '' ? $mode : null
             );
+            jsonOut($out, !empty($out['ok']) ? 200 : 400);
+
+        case 'live_1m_set_trade_mode':
+            $cfg = IndicatorConfig::load();
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            $mode = (string) ($_GET['trade_mode'] ?? $_POST['trade_mode'] ?? $_GET['mode'] ?? $_POST['mode'] ?? '');
+            $out = Live1mEngine::setTradeMode($cfg, $mode, $sid === false ? null : $sid);
             jsonOut($out, !empty($out['ok']) ? 200 : 400);
 
         case 'live_1m_set_resolution':
@@ -766,7 +778,7 @@ try {
         default:
             jsonOut([
                 'ok' => false,
-                'error' => 'Unknown action. Use …|sim_1m_*|live_1m_start|live_1m_stop|live_1m_close_all|live_1m_resume|live_1m_candidates|live_1m_adopt|live_1m_tick|live_1m_status|live_1m_set_method|live_1m_set_resolution|live_1m_set_levels|sim_1m_set_levels',
+                'error' => 'Unknown action. Use …|sim_1m_*|live_1m_start|live_1m_stop|live_1m_close_all|live_1m_resume|live_1m_candidates|live_1m_adopt|live_1m_tick|live_1m_status|live_1m_set_method|live_1m_set_trade_mode|live_1m_set_resolution|live_1m_set_levels|sim_1m_set_levels',
             ], 400);
     }
 } catch (ApiException $e) {

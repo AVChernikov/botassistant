@@ -74,6 +74,8 @@ def start(db_path: str, cfg: dict) -> dict:
         cfg["tp_pct"] = tp_pct
         cfg["sl_pct"] = sl_pct
         cfg["lot_usd"] = lot_usd
+        tm = str(cfg.get("trade_mode") or "normal").strip().lower()
+        cfg["trade_mode"] = tm if tm in ("normal", "inverse") else "normal"
         con.execute(
             """
             INSERT INTO live_1m_sessions (
@@ -389,6 +391,68 @@ def set_method(
     return set_lead(db_path, session_id, method, None, method_mode)
 
 
+def set_trade_mode(db_path: str, session_id: int | None, trade_mode: str) -> dict:
+    """Persist live entry direction: normal (follow impulse) or inverse (against)."""
+    con = connect(db_path)
+    try:
+        now = _now()
+        mode = str(trade_mode or "").strip().lower()
+        if mode not in ("normal", "inverse"):
+            return {"ok": False, "error": "trade_mode must be normal|inverse"}
+        if session_id:
+            row = con.execute(
+                "SELECT id, config_json FROM live_1m_sessions WHERE id=? AND status='running'",
+                (int(session_id),),
+            ).fetchone()
+        else:
+            row = con.execute(
+                """
+                SELECT id, config_json FROM live_1m_sessions
+                WHERE status='running' ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+        if not row:
+            return {"ok": False, "error": "no running session"}
+        sid = int(row["id"] if hasattr(row, "keys") else row[0])
+        cfg_raw = row["config_json"] if hasattr(row, "keys") else row[1]
+        cfg: dict = {}
+        if isinstance(cfg_raw, str) and cfg_raw.strip():
+            try:
+                parsed = json.loads(cfg_raw)
+                if isinstance(parsed, dict):
+                    cfg = parsed
+            except Exception:
+                cfg = {}
+        elif isinstance(cfg_raw, dict):
+            cfg = dict(cfg_raw)
+        cfg["trade_mode"] = mode
+        con.execute(
+            """
+            UPDATE live_1m_sessions
+            SET config_json=?, updated_at=?, last_reason=?
+            WHERE id=?
+            """,
+            (
+                json.dumps(cfg, ensure_ascii=True),
+                now,
+                f"trade_mode -> {mode}",
+                sid,
+            ),
+        )
+        con.execute(
+            "INSERT INTO live_1m_logs (session_id, created_at, level, message) VALUES (?, ?, 'info', ?)",
+            (
+                sid,
+                now,
+                "режим входа: inverse (против сигнала)" if mode == "inverse" else "режим входа: normal (по сигналу)",
+            ),
+        )
+        con.commit()
+        return {"ok": True, "session_id": sid, "trade_mode": mode}
+    finally:
+        con.close()
+
+
 def _normalize_pct_list(raw, fallback: list[float]) -> list[float]:
     out: list[float] = []
     if isinstance(raw, str):
@@ -529,12 +593,27 @@ def status_bundle(db_path: str, session_id: int | None = None, ticks: int = 40, 
                 """
                 SELECT id, created_at, bar_ts, price, bid, ask, spread_bps,
                        method, resolution, roc_sig, sma_sig, method_sig, action, reason,
-                       position_side, position_size, u_pnl, session_pnl
+                       position_side, position_size, u_pnl, session_pnl, payload_json
                 FROM live_1m_ticks WHERE session_id=? ORDER BY id DESC LIMIT ?
                 """,
                 (sid, int(ticks)),
             ).fetchall()
         ]
+        for tr in tick_rows:
+            raw = tr.pop("payload_json", None)
+            payload = {}
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        payload = parsed
+                except Exception:
+                    payload = {}
+            elif isinstance(raw, dict):
+                payload = raw
+            tr["payload"] = payload
+            if tr.get("method_sig") is None and payload.get("impulse_sig") is not None:
+                tr["method_sig"] = payload.get("impulse_sig")
         trade_rows = [
             dict(r)
             for r in con.execute(
@@ -654,13 +733,14 @@ def set_position(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("op", choices=["start", "stop", "session", "save", "status", "set_method", "set_position", "set_levels"])
+    ap.add_argument("op", choices=["start", "stop", "session", "save", "status", "set_method", "set_position", "set_levels", "set_trade_mode"])
     ap.add_argument("db_path")
     ap.add_argument("--payload", default=None, help="JSON file for start/save/set_position/set_levels")
     ap.add_argument("--session-id", type=int, default=None)
     ap.add_argument("--method", default=None)
     ap.add_argument("--resolution", default=None)
     ap.add_argument("--mode", default=None, help="method_mode: flash|manual")
+    ap.add_argument("--trade-mode", default=None, help="trade_mode: normal|inverse")
     ap.add_argument("--ticks", type=int, default=40)
     ap.add_argument("--trades", type=int, default=30)
     ns = ap.parse_args()
@@ -695,6 +775,14 @@ def main() -> int:
                         getattr(ns, "resolution", None),
                         getattr(ns, "mode", None),
                     ),
+                    ensure_ascii=True,
+                )
+            )
+            return 0
+        if ns.op == "set_trade_mode":
+            print(
+                json.dumps(
+                    set_trade_mode(ns.db_path, ns.session_id, getattr(ns, "trade_mode", None) or ""),
                     ensure_ascii=True,
                 )
             )

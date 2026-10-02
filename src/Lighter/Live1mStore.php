@@ -147,6 +147,17 @@ final class Live1mStore
         return self::run($dbPath, 'set_method', $extra);
     }
 
+    public static function setTradeMode(string $dbPath, string $tradeMode, ?int $sessionId = null): array
+    {
+        $extra = ['--trade-mode', escapeshellarg($tradeMode)];
+        if ($sessionId !== null) {
+            $extra[] = '--session-id';
+            $extra[] = (string) $sessionId;
+        }
+
+        return self::run($dbPath, 'set_trade_mode', $extra);
+    }
+
     /** @param array<string, mixed> $payload */
     public static function setLevels(string $dbPath, array $payload, ?int $sessionId = null): array
     {
