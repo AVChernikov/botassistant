@@ -25,14 +25,20 @@ final class Live1mEngine
     }
 
     /**
-     * Last non-zero impulse in signals[0..$upto] — current regime after zero-cross methods.
+     * Fresh impulse on closed bar (± lookback) — ignore stale history.
+     * Deadzone-boundary signals are one-bar impulses; full-history "regime"
+     * falsely opens trades on session start without a new cross.
      *
      * @param list<int|float|null> $signals
      */
-    private static function lastNonZeroSignal(array $signals, int $upto): int
+    private static function recentImpulse(array $signals, int $closed, int $lookback = 1): int
     {
-        $upto = min($upto, count($signals) - 1);
-        for ($j = $upto; $j >= 0; $j--) {
+        $closed = min($closed, count($signals) - 1);
+        if ($closed < 0) {
+            return 0;
+        }
+        $from = max(0, $closed - max(0, $lookback));
+        for ($j = $closed; $j >= $from; $j--) {
             $s = (int) ($signals[$j] ?? 0);
             if ($s !== 0) {
                 return $s > 0 ? 1 : -1;
@@ -40,6 +46,16 @@ final class Live1mEngine
         }
 
         return 0;
+    }
+
+    /**
+     * @deprecated prefer recentImpulse — full-history regime opens without a fresh cross
+     *
+     * @param list<int|float|null> $signals
+     */
+    private static function lastNonZeroSignal(array $signals, int $upto): int
+    {
+        return self::recentImpulse($signals, $upto, max(0, $upto));
     }
 
     private const METHOD_PICK_PROMPT = <<<'PROMPT'
@@ -71,12 +87,16 @@ PROMPT;
         if (!in_array($startMethod, TechnicalAnalysis::METHODS, true)) {
             $startMethod = 'ROC(10) zero-cross';
         }
+        $methodMode = strtolower((string) ($opts['method_mode'] ?? 'flash'));
+        if (!in_array($methodMode, ['flash', 'manual'], true)) {
+            $methodMode = 'flash';
+        }
 
         $start = Live1mStore::start($cfg->dbPath(), [
             'market_id' => $marketId,
             'symbol' => $sym,
             'resolution' => $startRes,
-            // Placeholder until Flash picks method on first tick
+            // Placeholder until Flash picks method on first tick (unless manual)
             'method' => $startMethod,
             'lot_usd' => (float) ($opts['lot_usd'] ?? 200),
             'tick_sec' => (int) ($opts['tick_sec'] ?? 30),
@@ -86,7 +106,8 @@ PROMPT;
             'sl_levels' => $opts['sl_levels'] ?? [30],
             'kill_lo' => (float) ($opts['kill_lo'] ?? -50),
             'kill_hi' => (float) ($opts['kill_hi'] ?? 100),
-            'method_source' => 'deepseek-flash',
+            'method_mode' => $methodMode,
+            'method_source' => $methodMode === 'manual' ? 'manual' : 'deepseek-flash',
         ]);
         if (empty($start['ok'])) {
             return $start;
@@ -160,6 +181,73 @@ PROMPT;
         }
 
         return $out;
+    }
+
+    /**
+     * Close ALL exchange positions + cancel ALL orders (no session stop).
+     * Clears session paper position if a running session exists.
+     *
+     * @return array<string, mixed>
+     */
+    public static function closeAll(IndicatorConfig $cfg, ?int $sessionId = null, int $marketId = 120): array
+    {
+        $db = $cfg->dbPath();
+        $wrap = Live1mStore::session($db, $sessionId);
+        $sess = $wrap['session'] ?? null;
+        $mid = is_array($sess) ? (int) ($sess['market_id'] ?? $marketId) : $marketId;
+        $sid = is_array($sess) ? (int) ($sess['id'] ?? 0) : null;
+        self::$activeMarketId = $mid;
+
+        $flatten = self::liveExec('flatten_all', []);
+        if (empty($flatten['flat'])) {
+            $flattenMarket = self::liveExec('flatten', ['--market-id', (string) $mid]);
+            $flatten['market_retry'] = $flattenMarket;
+            $flatten['flat'] = !empty($flattenMarket['flat']);
+            $flatten['ok'] = !empty($flattenMarket['ok']);
+        }
+
+        $verify = self::exchangeDetail($mid);
+        $stillPos = is_array($verify['position'] ?? null);
+        $stillOrd = is_array($verify['orders'] ?? null) && ($verify['orders'] !== []);
+        if ($stillPos || $stillOrd) {
+            $flatten['verify_pass2'] = self::liveExec('flatten', ['--market-id', (string) $mid]);
+            $verify = self::exchangeDetail($mid);
+            $stillPos = is_array($verify['position'] ?? null);
+            $stillOrd = is_array($verify['orders'] ?? null) && ($verify['orders'] !== []);
+        }
+
+        $sessionClear = null;
+        if ($sid && is_array($sess) && ($sess['status'] ?? '') === 'running') {
+            $sessionClear = Live1mStore::setPosition($db, [
+                'side' => null,
+                'size' => null,
+                'entry' => null,
+                'tp' => null,
+                'sl' => null,
+                'reason' => 'exchange close all',
+            ], $sid);
+        }
+
+        $exState = null;
+        if ($sid) {
+            $exState = self::syncExchangeState($sid, $mid, 'ui_close_all', false);
+        }
+
+        return [
+            'ok' => true,
+            'flat' => !$stillPos && !$stillOrd,
+            'flatten' => $flatten,
+            'verify' => [
+                'flat' => !$stillPos && !$stillOrd,
+                'position' => $verify['position'] ?? null,
+                'orders' => $verify['orders'] ?? [],
+                'summary' => $verify['summary'] ?? null,
+            ],
+            'session_clear' => $sessionClear,
+            'ex_state' => $exState,
+            'session_id' => $sid ?: null,
+            'market_id' => $mid,
+        ];
     }
 
     /**
@@ -701,17 +789,39 @@ PROMPT;
     }
 
     /**
-     * Switch leading method for running emulation; next ticks use it.
+     * Switch leading method for running session; next ticks use it.
+     * $mode: flash|manual — manual locks Flash from overwriting method.
      *
      * @return array<string, mixed>
      */
-    public static function setMethod(IndicatorConfig $cfg, string $method, ?int $sessionId = null): array
+    public static function setMethod(IndicatorConfig $cfg, string $method, ?int $sessionId = null, ?string $mode = null): array
     {
         if (!in_array($method, TechnicalAnalysis::METHODS, true)) {
             return ['ok' => false, 'error' => 'unknown method'];
         }
+        if ($mode !== null && $mode !== '' && !in_array($mode, ['flash', 'manual'], true)) {
+            return ['ok' => false, 'error' => 'mode must be flash|manual'];
+        }
 
-        return Live1mStore::setMethod($cfg->dbPath(), $method, $sessionId);
+        return Live1mStore::setMethod($cfg->dbPath(), $method, $sessionId, $mode);
+    }
+
+    /** @param array<string, mixed> $sess */
+    private static function methodModeFromSession(array $sess): string
+    {
+        $raw = $sess['config_json'] ?? null;
+        $cfg = [];
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $cfg = $decoded;
+            }
+        } elseif (is_array($raw)) {
+            $cfg = $raw;
+        }
+        $mode = strtolower((string) ($cfg['method_mode'] ?? 'flash'));
+
+        return in_array($mode, ['flash', 'manual'], true) ? $mode : 'flash';
     }
 
     /**
@@ -1367,11 +1477,11 @@ PROMPT;
         $requests = [
             'details' => ['/api/v1/orderBookDetails', ['market_id' => $marketId]],
             'book' => ['/api/v1/orderBookOrders', ['market_id' => $marketId, 'limit' => 15]],
-            'sig' => $client->candlesRequest($marketId, $resolution, countBack: 120),
+            'sig' => $client->candlesRequest($marketId, $resolution, countBack: 400),
         ];
         if ($needPick) {
             foreach (self::SIGNAL_TFS as $tf) {
-                $requests['c_' . $tf] = $client->candlesRequest($marketId, $tf, countBack: 120);
+                $requests['c_' . $tf] = $client->candlesRequest($marketId, $tf, countBack: 400);
             }
         }
         $bundle = $client->getMany($requests);
@@ -1389,29 +1499,42 @@ PROMPT;
                 }
             }
             $methodPick = self::pickLeadWithFlash($cfg->dbPath(), $marketId, $frames, $method, $resolution);
+            $methodMode = self::methodModeFromSession($sess);
             if (!empty($methodPick['ok']) && !empty($methodPick['method'])) {
                 $pickedMethod = (string) $methodPick['method'];
                 $adviseTf = (string) ($methodPick['resolution'] ?? '');
                 if (!in_array($adviseTf, self::SIGNAL_TFS, true)) {
                     $adviseTf = '';
                 }
-                // TF is user-controlled only; Flash may change method, TF advice goes to log.
-                $changed = $pickedMethod !== $method;
-                if ($changed) {
-                    Live1mStore::setLead($db, $pickedMethod, $resolution, (int) $sess['id']);
-                    $method = $pickedMethod;
+                // TF is user-controlled only. Method: Flash applies only when mode=flash.
+                if ($methodMode === 'manual') {
+                    $msg = 'DeepSeek Flash советует метод: ' . $pickedMethod
+                        . ' (не применён — режим manual, сейчас ' . $method . ' @ ' . $resolution . ')';
+                    if ($adviseTf !== '' && $adviseTf !== $resolution) {
+                        $msg .= ' · совет ТФ: ' . $adviseTf;
+                    }
+                    if (!empty($methodPick['why'])) {
+                        $msg .= ' — ' . $methodPick['why'];
+                    }
+                    $logs[] = ['level' => 'info', 'message' => $msg];
+                } else {
+                    $changed = $pickedMethod !== $method;
+                    if ($changed) {
+                        Live1mStore::setLead($db, $pickedMethod, $resolution, (int) $sess['id'], 'flash');
+                        $method = $pickedMethod;
+                    }
+                    $msg = ($changed ? 'DeepSeek Flash выбрал метод' : 'DeepSeek Flash подтвердил метод')
+                        . ': ' . $method . ' @ ' . $resolution;
+                    if ($adviseTf !== '' && $adviseTf !== $resolution) {
+                        $msg .= ' · совет ТФ: ' . $adviseTf . ' (не применён — меняет только пользователь)';
+                    } elseif ($adviseTf === $resolution) {
+                        $msg .= ' · ТФ ок';
+                    }
+                    if (!empty($methodPick['why'])) {
+                        $msg .= ' — ' . $methodPick['why'];
+                    }
+                    $logs[] = ['level' => 'info', 'message' => $msg];
                 }
-                $msg = ($changed ? 'DeepSeek Flash выбрал метод' : 'DeepSeek Flash подтвердил метод')
-                    . ': ' . $method . ' @ ' . $resolution;
-                if ($adviseTf !== '' && $adviseTf !== $resolution) {
-                    $msg .= ' · совет ТФ: ' . $adviseTf . ' (не применён — меняет только пользователь)';
-                } elseif ($adviseTf === $resolution) {
-                    $msg .= ' · ТФ ок';
-                }
-                if (!empty($methodPick['why'])) {
-                    $msg .= ' — ' . $methodPick['why'];
-                }
-                $logs[] = ['level' => 'info', 'message' => $msg];
                 if (isset($frames[$resolution])) {
                     $bundle['sig'] = ['c' => $frames[$resolution], 'r' => $resolution];
                 }
@@ -1458,48 +1581,54 @@ PROMPT;
         $prevClosed = max(0, $n - 3);
         $rocSig = (int) ($roc[$closed] ?? 0);
         $smaSig = (int) ($sma[$closed] ?? 0);
-        // Methods emit impulse ±1 only on the cross bar, then 0. Use last non-zero
-        // regime on closed bars so we still catch crosses if a tick was slow.
-        $methodSig = self::lastNonZeroSignal($meth, $closed);
-        $prevMethod = self::lastNonZeroSignal($meth, $prevClosed);
-        $impulseSig = (int) ($meth[$closed] ?? 0);
+        // Only a fresh boundary cross on the last 1–2 closed bars may open/flip.
+        // Do NOT use full-history lastNonZero — that re-opens on stale regime at start.
+        $impulseSig = self::recentImpulse($meth, $closed, 1);
+        $methodSig = $impulseSig;
+        $prevMethod = self::recentImpulse($meth, $prevClosed, 1);
         $zeroMeta = TechnicalAnalysis::methodZeroSeries($candles, $method);
         $deadzoneEps = (float) ($zeroMeta['eps'] ?? 0);
+        $dzLo = (float) ($zeroMeta['lo'] ?? -$deadzoneEps);
+        $dzHi = (float) ($zeroMeta['hi'] ?? $deadzoneEps);
+        $dzBias = (float) ($zeroMeta['bias'] ?? 0);
         $indValue = $zeroMeta['value'];
         $series = $zeroMeta['series'] ?? [];
         $prevInd = null;
         if (is_array($series) && $closed > 0 && array_key_exists($closed - 1, $series) && $series[$closed - 1] !== null) {
             $prevInd = (float) $series[$closed - 1];
         }
-        $inDeadzone = $indValue !== null && $deadzoneEps > 0 && abs((float) $indValue) <= $deadzoneEps;
+        $inDeadzone = $indValue !== null && $deadzoneEps > 0
+            && (float) $indValue >= $dzLo && (float) $indValue <= $dzHi;
         $indUnit = (string) ($zeroMeta['unit'] ?? '');
         $boundNote = 'нет креста границы';
         if ($indValue !== null && $prevInd !== null && $deadzoneEps > 0) {
-            if ($prevInd < -$deadzoneEps && (float) $indValue >= -$deadzoneEps) {
-                $boundNote = 'long: −eps снизу↑';
-            } elseif ($prevInd > $deadzoneEps && (float) $indValue <= $deadzoneEps) {
-                $boundNote = 'short: +eps сверху↓';
+            if ($prevInd < $dzLo && (float) $indValue >= $dzLo) {
+                $boundNote = 'long: lo снизу↑';
+            } elseif ($prevInd > $dzHi && (float) $indValue <= $dzHi) {
+                $boundNote = 'short: hi сверху↓';
             } elseif ($inDeadzone) {
                 $boundNote = 'внутри зоны';
-            } elseif ((float) $indValue > $deadzoneEps) {
-                $boundNote = 'выше +eps';
+            } elseif ((float) $indValue > $dzHi) {
+                $boundNote = 'выше hi';
             } else {
-                $boundNote = 'ниже −eps';
+                $boundNote = 'ниже lo';
             }
         }
+        $epsLabel = $deadzoneEps > 0
+            ? sprintf('[%.4g…%.4g] base±%.4g bias%+.2f', $dzLo, $dzHi, $deadzoneEps, $dzBias)
+            : '0';
         $logs[] = [
             'level' => 'info',
             'message' => sprintf(
-                'сигнал %s: prev=%s value=%s eps±%s %s · %s · %s · impulse=%+d regime=%+d',
+                'сигнал %s: prev=%s value=%s eps%s %s · %s · %s · impulse=%+d',
                 $method,
                 $prevInd === null ? 'n/a' : sprintf('%.5f', $prevInd),
                 $indValue === null ? 'n/a' : sprintf('%.5f', $indValue),
-                $deadzoneEps > 0 ? sprintf('%.5f', $deadzoneEps) : '0',
+                $epsLabel,
                 $indUnit !== '' ? '(' . $indUnit . ')' : '',
                 $indValue === null ? 'нет значения' : ($inDeadzone ? 'в мёртвой зоне' : 'вне мёртвой зоны'),
                 $boundNote,
-                $impulseSig,
-                $methodSig
+                $impulseSig
             ),
         ];
 
@@ -1595,15 +1724,10 @@ PROMPT;
             }
         }
 
-        // Follow regime from last deadzone-boundary cross (not zero-cross).
+        // Trade only on a fresh deadzone-boundary impulse (closed bar ±1).
         if ($status === 'running' && $action === 'hold') {
-            $crossLong = $methodSig > 0 && $side !== 'long';
-            $crossShort = $methodSig < 0 && $side !== 'short';
-            // Prefer fresh impulse when regime unchanged but bar just crossed (flat→entry).
-            if (!$crossLong && !$crossShort) {
-                $crossLong = $prevMethod <= 0 && $impulseSig > 0 && $side !== 'long';
-                $crossShort = $prevMethod >= 0 && $impulseSig < 0 && $side !== 'short';
-            }
+            $crossLong = $impulseSig > 0 && $side !== 'long';
+            $crossShort = $impulseSig < 0 && $side !== 'short';
             $wideSpread = $spreadBps !== null && $spreadBps > 25.0;
             $willTrade = !$wideSpread && ($crossLong || $crossShort);
             $reconcile = null;
@@ -1645,7 +1769,7 @@ PROMPT;
                 }
                 if ($side !== 'long') {
                     [$side, $size, $entry, $entryTs, $tp, $sl, $fees, $tradesCount, $tr] = self::openPaper(
-                        'long', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, 'deadzone −eps↑ long', $tradesCount,
+                        'long', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, 'deadzone lo↑ long', $tradesCount,
                         $tpLevels, $slLevels
                     );
                     $trades[] = $tr;
@@ -1653,8 +1777,8 @@ PROMPT;
                     $uPnl = 0.0;
                     $sessionPnl = $realized;
                     $action = 'open_long';
-                    $reason = 'deadzone −eps↑ long'
-                        . ($deadzoneEps > 0 ? sprintf(' (eps±%.4g)', $deadzoneEps) : '');
+                    $reason = 'deadzone lo↑ long'
+                        . ($deadzoneEps > 0 ? sprintf(' ([%.4g…%.4g])', $dzLo, $dzHi) : '');
                 }
             } elseif ($crossShort) {
                 if ($side === 'long') {
@@ -1665,7 +1789,7 @@ PROMPT;
                 }
                 if ($side !== 'short') {
                     [$side, $size, $entry, $entryTs, $tp, $sl, $fees, $tradesCount, $tr] = self::openPaper(
-                        'short', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, 'deadzone +eps↓ short', $tradesCount,
+                        'short', $price, $lot, $tpPct, $slPct, $fees, $barTs, $now, 'deadzone hi↓ short', $tradesCount,
                         $tpLevels, $slLevels
                     );
                     $trades[] = $tr;
@@ -1673,20 +1797,18 @@ PROMPT;
                     $uPnl = 0.0;
                     $sessionPnl = $realized;
                     $action = 'open_short';
-                    $reason = 'deadzone +eps↓ short'
-                        . ($deadzoneEps > 0 ? sprintf(' (eps±%.4g)', $deadzoneEps) : '');
+                    $reason = 'deadzone hi↓ short'
+                        . ($deadzoneEps > 0 ? sprintf(' ([%.4g…%.4g])', $dzLo, $dzHi) : '');
                 }
             } else {
                 $action = $side ? 'hold_pos' : 'flat';
                 if ($side) {
-                    $reason = $methodSig === 0
-                        ? 'in position, no regime yet'
-                        : ('in position, regime ' . ($methodSig > 0 ? '+1' : '-1'));
+                    $reason = 'in position, ждём lo↑ / hi↓';
                 } else {
-                    $reason = $methodSig === 0 ? 'no regime / no cross' : 'no new cross';
+                    $reason = 'нет свежего креста границы (lo↑ / hi↓)';
                 }
                 if ($deadzoneEps > 0) {
-                    $reason .= sprintf(' · eps±%.4g', $deadzoneEps);
+                    $reason .= sprintf(' · [%.4g…%.4g]', $dzLo, $dzHi);
                     if ($indValue !== null) {
                         $reason .= $inDeadzone ? ' · в зоне' : ' · вне зоны';
                     }
@@ -1743,11 +1865,15 @@ PROMPT;
                 'fetch_ms' => round($fetchMs, 1),
                 'method' => $method,
                 'resolution' => $resolution,
-                'method_source' => 'deepseek-flash',
+                'method_source' => self::methodModeFromSession($sess) === 'manual' ? 'manual' : 'deepseek-flash',
+                'method_mode' => self::methodModeFromSession($sess),
                 'method_pick' => $methodPick,
                 'prev_method_sig' => $prevMethod,
                 'impulse_sig' => $impulseSig,
                 'deadzone_eps' => $deadzoneEps > 0 ? $deadzoneEps : null,
+                'deadzone_lo' => $deadzoneEps > 0 ? $dzLo : null,
+                'deadzone_hi' => $deadzoneEps > 0 ? $dzHi : null,
+                'deadzone_bias' => $deadzoneEps > 0 ? $dzBias : null,
                 'indicator_value' => $indValue,
                 'in_deadzone' => $inDeadzone,
                 'signal_bar' => 'closed',

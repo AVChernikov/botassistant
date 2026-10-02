@@ -131,6 +131,17 @@
       background: var(--accent); color: #fff; border-color: var(--accent);
     }
     .tf-btn:disabled { opacity: 0.55; cursor: wait; }
+    .method-switch {
+      display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center;
+      margin: 0.65rem 0 0.85rem;
+    }
+    .method-switch .lab {
+      font-size: 0.78rem; color: var(--muted); margin-right: 0.15rem; font-weight: 600;
+    }
+    .method-switch .tf-btn { font-size: 0.78rem; padding: 0.28rem 0.55rem; }
+    .method-switch .tf-btn[data-mode="flash"].active {
+      background: #1f4b7a; border-color: #1f4b7a; color: #fff;
+    }
     .levels-box {
       margin-top: 0.7rem;
       padding: 0.65rem 0.75rem;
@@ -203,7 +214,7 @@
     <header>
       <div>
         <div class="brand">live <span>LIT</span></div>
-        <p class="subtitle">LIVE сессия 30с: стакан + сигнал по выбранному ТФ (1m/5m). ТФ меняете только вы; Flash выбирает метод и может посоветовать ТФ в логе. Эмуляция: <a href="sim-1m.php" style="color:var(--accent);font-weight:600;text-decoration:none">sim-1m</a>.</p>
+        <p class="subtitle">LIVE сессия 30с: стакан + сигнал по выбранному ТФ (1m/5m). ТФ — только вручную. Метод — Flash или ручной (блок live trading). Эмуляция: <a href="sim-1m.php" style="color:var(--accent);font-weight:600;text-decoration:none">sim-1m</a>.</p>
       </div>
       <div class="nav">
         <a href="index.php">← index</a>
@@ -238,7 +249,7 @@
         </div>
         <p class="levels-hint">Radio лота — на <b>следующую</b> сделку. Кнопка «лот → поз.» — добор/сокращение <b>текущей</b> позиции до выбранного лота по mark. SL/TP → меняют текущие уровни.</p>
       </div>
-      <p class="chart-sub">График = выбранный ТФ (только вручную). Flash меняет метод; совет по ТФ — в логе.</p>
+      <p class="chart-sub">График = выбранный ТФ (вручную). Метод: Flash или ручной — в live trading.</p>
     </div>
 
     <div class="section-label">официально с Lighter</div>
@@ -246,6 +257,10 @@
       <div class="chart-head" style="margin-bottom:0.65rem">
         <div class="method">биржа · <span id="exOfficialTitle">LIT #120</span></div>
         <div class="chart-meta" id="exOfficialMeta">загрузка…</div>
+      </div>
+      <div class="row" style="margin-bottom:0.65rem">
+        <button type="button" class="btn-stop" id="btnCloseAll" title="Закрыть все позиции и снять все ордера на аккаунте">Close all</button>
+        <span class="muted" style="font-size:0.82rem">закрывает позиции и снимает ордера на Lighter (сессию не останавливает)</span>
       </div>
       <div class="stats" id="exPositionStats">
         <div class="stat"><div class="k">позиция</div><div class="v muted">—</div></div>
@@ -271,11 +286,22 @@
         <button class="btn-go" id="btnStart">Запустить LIVE</button>
         <button class="btn-stop" id="btnStop" disabled>Стоп</button>
         <span class="pill live" id="modePill">режим: LIVE</span>
-        <span class="pill" id="methodPill" title="метод выбирает DeepSeek Flash">Flash · —</span>
+        <span class="pill" id="methodPill" title="метод: Flash или ручной">Flash · —</span>
         <span class="pill off" id="runPill">stopped</span>
         <span class="muted mono" id="metaLine">session —</span>
       </div>
-      <p class="note"><b style="color:var(--ask)">REAL ORDERS.</b> Live лот выбирается под графиком (50…400). DeepSeek Pro — отдельный лот. На одном аккаунте они <b>складываются</b> в net. <b>Стоп</b> закрывает все позиции на аккаунте, снимает все ордера и делает повторную проверку. Эмуляция: <a href="sim-1m.php">sim-1m</a>.</p>
+      <div class="method-switch" id="methodSwitch" title="Flash сам меняет метод; ручной — фиксирует выбранный индикатор">
+        <span class="lab">метод</span>
+        <button type="button" class="tf-btn active" data-mode="flash" data-method="">Flash</button>
+        <button type="button" class="tf-btn" data-mode="manual" data-method="ROC(10) zero-cross">ROC</button>
+        <button type="button" class="tf-btn" data-mode="manual" data-method="SMA(10/30) cross">SMA</button>
+        <button type="button" class="tf-btn" data-mode="manual" data-method="EMA(12/26) cross">EMA</button>
+        <button type="button" class="tf-btn" data-mode="manual" data-method="MACD(12,26,9) cross">MACD</button>
+        <button type="button" class="tf-btn" data-mode="manual" data-method="RSI(14) 30/70">RSI</button>
+        <button type="button" class="tf-btn" data-mode="manual" data-method="Bollinger(20,2) bounce">BB</button>
+        <button type="button" class="tf-btn" data-mode="manual" data-method="Momentum(10) flip">Mom</button>
+      </div>
+      <p class="note"><b style="color:var(--ask)">REAL ORDERS.</b> Метод: <b>Flash</b> или ручной индикатор (ниже). Лот под графиком (50…400). DeepSeek Pro — отдельный лот. На одном аккаунте они <b>складываются</b> в net. <b>Стоп</b> закрывает все позиции на аккаунте, снимает все ордера и делает повторную проверку. Эмуляция: <a href="sim-1m.php">sim-1m</a>.</p>
       <div class="stats" id="stats"></div>
     </div>
 
@@ -324,7 +350,8 @@
   </div>
 
   <script src="chart-candles.js?v=2"></script>
-  <script src="sim-1m-chart.js?v=10"></script>
+  <script src="chart-crosshair.js?v=2"></script>
+  <script src="sim-1m-chart.js?v=12"></script>
   <script>
     const API = 'api.php';
     const STATUS_ACTION = 'live_1m_status';
@@ -335,6 +362,16 @@
     const SL_OPTS = [0.5, 1, 2, 3, 5, 10, 15, 20, 25, 30];
     const TP_OPTS = [0.5, 1, 2, 3, 5, 10, 15, 20, 25, 30];
     const TF_OPTS = ['1m', '5m'];
+    const METHOD_SHORT = {
+      'ROC(10) zero-cross': 'ROC',
+      'SMA(10/30) cross': 'SMA',
+      'EMA(12/26) cross': 'EMA',
+      'MACD(12,26,9) cross': 'MACD',
+      'RSI(14) 30/70': 'RSI',
+      'Bollinger(20,2) bounce': 'BB',
+      'Momentum(10) flip': 'Mom',
+    };
+    const METHOD_OPTS = Object.keys(METHOD_SHORT);
     let sessionId = null;
     try {
       const saved = localStorage.getItem('live_1m_session_id');
@@ -345,9 +382,15 @@
     let tickSec = 30;
     let levelsState = { lot: 200, sl: 30, tp: 30 };
     let selectedTf = '1m';
+    let selectedMethodMode = 'flash';
+    let selectedMethod = 'ROC(10) zero-cross';
     try {
       const tfSaved = localStorage.getItem('live_1m_tf');
       if (TF_OPTS.includes(tfSaved)) selectedTf = tfSaved;
+      const mm = localStorage.getItem('live_1m_method_mode');
+      if (mm === 'flash' || mm === 'manual') selectedMethodMode = mm;
+      const mSaved = localStorage.getItem('live_1m_method');
+      if (METHOD_OPTS.includes(mSaved)) selectedMethod = mSaved;
     } catch (_) {}
     let lastEntry = null;
     let lastSide = null;
@@ -374,7 +417,9 @@
       }
       syncTfUi(tf);
       if (window.Sim1mChart) {
-        const m = Sim1mChart.currentMethod ? Sim1mChart.currentMethod() : 'ROC(10) zero-cross';
+        const m = selectedMethodMode === 'manual'
+          ? selectedMethod
+          : (Sim1mChart.currentMethod ? Sim1mChart.currentMethod() : selectedMethod);
         Sim1mChart.setLead(m, tf, { force: true });
       }
       if (!sessionId) return;
@@ -389,6 +434,56 @@
           alert(res.error || 'не удалось сменить ТФ');
           return;
         }
+        await refresh();
+      } catch (e) {
+        alert(String(e.message || e));
+      } finally {
+        btns.forEach((b) => { b.disabled = false; });
+      }
+    }
+
+    function syncMethodUi(mode, method) {
+      if (mode === 'flash' || mode === 'manual') selectedMethodMode = mode;
+      if (METHOD_OPTS.includes(method)) selectedMethod = method;
+      try {
+        localStorage.setItem('live_1m_method_mode', selectedMethodMode);
+        localStorage.setItem('live_1m_method', selectedMethod);
+      } catch (_) {}
+      document.querySelectorAll('#methodSwitch .tf-btn').forEach((btn) => {
+        const bMode = btn.getAttribute('data-mode');
+        const bMethod = btn.getAttribute('data-method') || '';
+        let on = false;
+        if (selectedMethodMode === 'flash') on = bMode === 'flash';
+        else on = bMode === 'manual' && bMethod === selectedMethod;
+        btn.classList.toggle('active', on);
+      });
+    }
+
+    async function applyMethod(mode, method) {
+      if (mode !== 'flash' && mode !== 'manual') return;
+      if (mode === 'manual' && !METHOD_OPTS.includes(method)) return;
+      const nextMethod = mode === 'manual' ? method : (selectedMethod || 'ROC(10) zero-cross');
+      syncMethodUi(mode, nextMethod);
+      if (window.Sim1mChart && mode === 'manual') {
+        Sim1mChart.setLead(nextMethod, selectedTf || '1m', { force: true });
+      }
+      if (!sessionId) return;
+      const btns = document.querySelectorAll('#methodSwitch .tf-btn');
+      btns.forEach((b) => { b.disabled = true; });
+      try {
+        const params = {
+          session_id: String(sessionId),
+          mode,
+        };
+        if (mode === 'manual') params.method = nextMethod;
+        else params.method = '';
+        const res = await api('live_1m_set_method', params);
+        if (!res.ok) {
+          alert(res.error || 'не удалось сменить метод');
+          return;
+        }
+        if (res.method) selectedMethod = res.method;
+        syncMethodUi(mode, selectedMethod);
         await refresh();
       } catch (e) {
         alert(String(e.message || e));
@@ -625,41 +720,31 @@
       if (!lastMark && ticks[0] && ticks[0].price != null) lastMark = Number(ticks[0].price);
       else if (ticks[0] && ticks[0].price != null) lastMark = Number(ticks[0].price);
       chartLevelsFromState();
-      // Leading method from session / latest tick (set by DeepSeek Flash).
-      const leadingMethod = s.method || (ticks[0] && ticks[0].method) || 'ROC(10) zero-cross';
+      // Leading method from session / latest tick (Flash or manual).
+      const leadingMethod = s.method || (ticks[0] && ticks[0].method) || selectedMethod || 'ROC(10) zero-cross';
       const leadingRes = s.resolution || (ticks[0] && ticks[0].resolution) || '1m';
+      let cfg = {};
+      try {
+        cfg = typeof s.config_json === 'string' ? JSON.parse(s.config_json || '{}') : (s.config_json || {});
+      } catch (_) { cfg = {}; }
+      const modeFromSess = (cfg.method_mode === 'manual' || cfg.method_mode === 'flash')
+        ? cfg.method_mode
+        : selectedMethodMode;
+      syncMethodUi(modeFromSess, leadingMethod);
       const methodPill = $('methodPill');
       if (methodPill) {
-        const shortMap = {
-          'ROC(10) zero-cross': 'ROC(10)',
-          'SMA(10/30) cross': 'SMA(10/30)',
-          'EMA(12/26) cross': 'EMA(12/26)',
-          'MACD(12,26,9) cross': 'MACD',
-          'RSI(14) 30/70': 'RSI(14)',
-          'Bollinger(20,2) bounce': 'BB bounce',
-          'Momentum(10) flip': 'Mom(10)',
-        };
-        methodPill.textContent = 'Flash · ' + (shortMap[leadingMethod] || leadingMethod) + ' @ ' + leadingRes;
-        methodPill.title = 'DeepSeek Flash → ' + leadingMethod + ' @ ' + leadingRes;
+        const short = METHOD_SHORT[leadingMethod] || leadingMethod;
+        const prefix = modeFromSess === 'manual' ? 'Manual' : 'Flash';
+        methodPill.textContent = prefix + ' · ' + short + ' @ ' + leadingRes;
+        methodPill.title = (modeFromSess === 'manual' ? 'ручной' : 'DeepSeek Flash')
+          + ' → ' + leadingMethod + ' @ ' + leadingRes;
       }
       if (window.Sim1mChart) {
         Sim1mChart.setLead(leadingMethod, leadingRes);
       }
       syncTfUi(leadingRes);
 
-      const methodLabel = (name) => {
-        if (!name) return '—';
-        const map = {
-          'ROC(10) zero-cross': 'ROC(10)',
-          'SMA(10/30) cross': 'SMA(10/30)',
-          'EMA(12/26) cross': 'EMA(12/26)',
-          'MACD(12,26,9) cross': 'MACD',
-          'RSI(14) 30/70': 'RSI(14)',
-          'Bollinger(20,2) bounce': 'BB bounce',
-          'Momentum(10) flip': 'Mom(10)',
-        };
-        return map[name] || name;
-      };
+      const methodLabel = (name) => METHOD_SHORT[name] || name || '—';
 
       $('ticksBody').innerHTML = ticks.length
         ? ticks.map(t => {
@@ -809,13 +894,15 @@
 
     $('btnStart').onclick = async () => {
       $('btnStart').disabled = true;
-      $('methodPill').textContent = 'Flash · выбирает…';
+      $('methodPill').textContent = selectedMethodMode === 'flash' ? 'Flash · выбирает…' : ('Manual · ' + (METHOD_SHORT[selectedMethod] || selectedMethod));
       try {
         const res = await api(START_ACTION, {
           market_id: '120',
           lot_usd: String(levelsState.lot),
           tick_sec: '30',
           resolution: selectedTf || '1m',
+          method: selectedMethod || 'ROC(10) zero-cross',
+          method_mode: selectedMethodMode || 'flash',
           tp_levels: JSON.stringify([levelsState.tp]),
           sl_levels: JSON.stringify([levelsState.sl]),
         });
@@ -873,6 +960,34 @@
       } catch (e) {
         alert(String(e));
         $('btnStop').disabled = false;
+      }
+    };
+
+    $('btnCloseAll').onclick = async () => {
+      if (!confirm('Close all: закрыть все позиции и снять все ордера на Lighter?')) return;
+      const btn = $('btnCloseAll');
+      btn.disabled = true;
+      const meta = $('exOfficialMeta');
+      if (meta) meta.textContent = 'Close all…';
+      try {
+        const res = await api('live_1m_close_all', {
+          market_id: '120',
+          ...(sessionId ? { session_id: String(sessionId) } : {}),
+        });
+        if (!res.ok) {
+          alert(res.error || 'close all failed');
+          return;
+        }
+        if (!res.flat) {
+          alert('Close all: на бирже ещё осталось — позиция или ордера. Обнови блок и проверь.');
+          console.warn('close_all not flat', res.flatten, res.verify);
+        }
+        await refresh();
+        await refreshExchangeOfficial();
+      } catch (e) {
+        alert(String(e.message || e));
+      } finally {
+        btn.disabled = false;
       }
     };
 
@@ -978,13 +1093,23 @@
     loadLevelsLocal();
     buildLevelsUi();
     syncTfUi(selectedTf);
+    syncMethodUi(selectedMethodMode, selectedMethod);
     document.querySelectorAll('#tfSwitch .tf-btn').forEach((btn) => {
       btn.addEventListener('click', () => applyTf(btn.getAttribute('data-tf')));
+    });
+    document.querySelectorAll('#methodSwitch .tf-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        applyMethod(btn.getAttribute('data-mode'), btn.getAttribute('data-method') || '');
+      });
     });
     refreshExchangeOfficial();
     boot();
     if (window.Sim1mChart) {
-      Sim1mChart.start({ method: 'ROC(10) zero-cross', resolution: selectedTf || '1m', refreshSec: 30 });
+      Sim1mChart.start({
+        method: selectedMethodMode === 'manual' ? selectedMethod : 'ROC(10) zero-cross',
+        resolution: selectedTf || '1m',
+        refreshSec: 30,
+      });
     }
   </script>
 </body>

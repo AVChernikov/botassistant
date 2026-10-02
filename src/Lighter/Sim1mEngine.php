@@ -836,11 +836,11 @@ PROMPT;
         $requests = [
             'details' => ['/api/v1/orderBookDetails', ['market_id' => $marketId]],
             'book' => ['/api/v1/orderBookOrders', ['market_id' => $marketId, 'limit' => 15]],
-            'sig' => $client->candlesRequest($marketId, $resolution, countBack: 120),
+            'sig' => $client->candlesRequest($marketId, $resolution, countBack: 400),
         ];
         if ($needPick) {
             foreach (self::SIGNAL_TFS as $tf) {
-                $requests['c_' . $tf] = $client->candlesRequest($marketId, $tf, countBack: 120);
+                $requests['c_' . $tf] = $client->candlesRequest($marketId, $tf, countBack: 400);
             }
         }
         $bundle = $client->getMany($requests);

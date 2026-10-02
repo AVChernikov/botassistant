@@ -9,8 +9,8 @@
     marketId: 120,
     resolution: '1m',
     method: 'ROC(10) zero-cross',
-    candleCount: 120,
-    visible: 80,
+    candleCount: 400,
+    visible: 120,
   };
 
   let state = {
@@ -109,6 +109,19 @@
         emptyText: 'Нет свечей ' + (resolution || ''),
         levels: state.levels || [],
       });
+      if (window.ChartCrosshair && candles && candles.length) {
+        ChartCrosshair.mark(canvas, {
+          pad: { left: 8, right: 58 },
+          points: candles.length,
+          times: candles.map((c) => c.t),
+          series: [
+            { name: 'O', values: candles.map((c) => c.o), digits: 4 },
+            { name: 'H', values: candles.map((c) => c.h), digits: 4 },
+            { name: 'L', values: candles.map((c) => c.l), digits: 4 },
+            { name: 'C', values: candles.map((c) => c.c), digits: 4, color: '#0f6b4c' },
+          ],
+        });
+      }
       return;
     }
     const { ctx, cssW, cssH } = prepareCanvas(canvas);
@@ -278,6 +291,28 @@
         }
       }
       ctx.stroke();
+    }
+
+    if (window.ChartCrosshair) {
+      const times = (state.lastCandles || []).map((c) => c.t);
+      const series = [];
+      for (const line of lines) {
+        series.push({
+          name: line.name || 'idx',
+          values: line.values || [],
+          digits: 4,
+          color: line.color || '#1f4b7a',
+        });
+      }
+      if (hist) {
+        series.push({ name: 'hist', values: hist, digits: 4 });
+      }
+      ChartCrosshair.mark(canvas, {
+        pad: { left: pad.left, right: pad.right },
+        points: n,
+        times: times.length === n ? times : undefined,
+        series,
+      });
     }
   }
 

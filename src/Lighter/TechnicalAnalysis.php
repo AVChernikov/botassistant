@@ -48,6 +48,13 @@ final class TechnicalAnalysis
     public const ROC_ZERO_EPS_MIN = self::EPS_HIGH_VOL;
     /** @deprecated legacy proportional deadzone */
     public const ZERO_EPS_FRAC = 0.35;
+    /**
+     * Max fraction of baseEps moved from one side to the other by trend bias.
+     * Uptrend: |lo| shrinks, hi grows by up to this × baseEps (width ≈ 2×baseEps).
+     */
+    public const DEADZONE_TREND_SKEW = 0.35;
+    /** |(SMA_fast−SMA_slow)/price| at/above → bias ±1 */
+    public const TREND_BIAS_FULL_AT = 0.004;
 
     public static function isKnownMethod(string $method): bool
     {
@@ -544,16 +551,16 @@ final class TechnicalAnalysis
             }
         }
         $lastPx = (float) ($closes[$n - 1] ?? 0);
-        $rocEps = self::volInverseDeadzone($roc);
-        $macdEps = self::priceDiffDeadzone($macdHist, $lastPx);
-        $smaEps = self::priceDiffDeadzone($smaDiff, $lastPx);
-        $emaEps = self::priceDiffDeadzone($emaDiff, $lastPx);
-        $momEps = self::priceDiffDeadzone($mom, $lastPx);
-        $macdSig = self::deadzoneBoundarySignals($macdHist, $macdEps);
-        $smaSig = self::deadzoneBoundarySignals($smaDiff, $smaEps);
-        $emaSig = self::deadzoneBoundarySignals($emaDiff, $emaEps);
-        $rocSig = self::deadzoneBoundarySignals($roc, $rocEps);
-        $momSig = self::deadzoneBoundarySignals($mom, $momEps);
+        $rocLv = self::deadzoneLevelsByTrend($roc, $closes);
+        $macdLv = self::deadzoneLevelsByTrend($macdHist, $closes, self::priceDiffDeadzone($macdHist, $lastPx));
+        $smaLv = self::deadzoneLevelsByTrend($smaDiff, $closes, self::priceDiffDeadzone($smaDiff, $lastPx));
+        $emaLv = self::deadzoneLevelsByTrend($emaDiff, $closes, self::priceDiffDeadzone($emaDiff, $lastPx));
+        $momLv = self::deadzoneLevelsByTrend($mom, $closes, self::priceDiffDeadzone($mom, $lastPx));
+        $macdSig = self::deadzoneBoundarySignals($macdHist, $macdLv['lo'], $macdLv['hi']);
+        $smaSig = self::deadzoneBoundarySignals($smaDiff, $smaLv['lo'], $smaLv['hi']);
+        $emaSig = self::deadzoneBoundarySignals($emaDiff, $emaLv['lo'], $emaLv['hi']);
+        $rocSig = self::deadzoneBoundarySignals($roc, $rocLv['lo'], $rocLv['hi']);
+        $momSig = self::deadzoneBoundarySignals($mom, $momLv['lo'], $momLv['hi']);
 
         $rsiSig = array_fill(0, $n, 0);
         $bbSig = array_fill(0, $n, 0);
@@ -656,6 +663,85 @@ final class TechnicalAnalysis
     }
 
     /**
+     * Price trend from SMA fast/slow: raw relative gap + bias in [-1, 1].
+     * Positive = uptrend (fast above slow).
+     *
+     * @param list<float> $closes
+     * @return array{trend: float, bias: float, sma_fast: ?float, sma_slow: ?float, price: ?float}
+     */
+    public static function trendBiasFromCloses(array $closes, int $fast = 10, int $slow = 30): array
+    {
+        $n = count($closes);
+        $empty = [
+            'trend' => 0.0,
+            'bias' => 0.0,
+            'sma_fast' => null,
+            'sma_slow' => null,
+            'price' => null,
+        ];
+        if ($n < $slow || $fast < 1 || $slow <= $fast) {
+            return $empty;
+        }
+        $sf = self::sma($closes, $fast);
+        $ss = self::sma($closes, $slow);
+        $i = $n - 1;
+        if ($sf[$i] === null || $ss[$i] === null) {
+            return $empty;
+        }
+        $price = (float) $closes[$i];
+        if ($price <= 0) {
+            return $empty;
+        }
+        $trend = ((float) $sf[$i] - (float) $ss[$i]) / $price;
+        $full = self::TREND_BIAS_FULL_AT;
+        $bias = $full > 0 ? max(-1.0, min(1.0, $trend / $full)) : 0.0;
+
+        return [
+            'trend' => $trend,
+            'bias' => $bias,
+            'sma_fast' => (float) $sf[$i],
+            'sma_slow' => (float) $ss[$i],
+            'price' => $price,
+        ];
+    }
+
+    /**
+     * Deadzone levels: width from vol (baseEps), asymmetry from price trend.
+     * Uptrend → |lo| smaller / hi larger (long easier); downtrend opposite.
+     * Total span stays ≈ 2 × baseEps.
+     *
+     * @param list<float|null> $values indicator series for vol width (e.g. ROC)
+     * @param list<float> $closes price closes for SMA trend
+     * @return array{lo: float, hi: float, base_eps: float, trend: float, bias: float}
+     */
+    public static function deadzoneLevelsByTrend(array $values, array $closes, ?float $baseEps = null): array
+    {
+        $base = $baseEps !== null ? max(0.0, (float) $baseEps) : self::volInverseDeadzone($values);
+        $tb = self::trendBiasFromCloses($closes);
+        $bias = (float) ($tb['bias'] ?? 0.0);
+        $skew = self::DEADZONE_TREND_SKEW * $base * $bias;
+        // lo more negative when bias < 0; hi larger when bias > 0
+        $lo = -($base - $skew);
+        $hi = $base + $skew;
+        // Keep lo < 0 < hi even at extreme skew
+        $minHalf = max(1e-12, $base * (1.0 - self::DEADZONE_TREND_SKEW));
+        if ($lo >= 0) {
+            $lo = -$minHalf;
+        }
+        if ($hi <= 0) {
+            $hi = $minHalf;
+        }
+
+        return [
+            'lo' => $lo,
+            'hi' => $hi,
+            'base_eps' => $base,
+            'trend' => (float) ($tb['trend'] ?? 0.0),
+            'bias' => $bias,
+        ];
+    }
+
+    /**
      * Raw zero-cross series + eps for a method (for logs / charts).
      *
      * @param list<array<string, mixed>> $candles
@@ -711,12 +797,20 @@ final class TechnicalAnalysis
             $unit = 'price';
         }
 
+        $levels = $eps > 0
+            ? self::deadzoneLevelsByTrend($series, $closes, $eps)
+            : ['lo' => 0.0, 'hi' => 0.0, 'base_eps' => 0.0, 'trend' => 0.0, 'bias' => 0.0];
+
         $closed = max(0, $n - 2);
         $value = $series[$closed] ?? null;
 
         return [
             'series' => $series,
             'eps' => $eps,
+            'lo' => (float) $levels['lo'],
+            'hi' => (float) $levels['hi'],
+            'bias' => (float) $levels['bias'],
+            'trend' => (float) $levels['trend'],
             'value' => $value !== null ? (float) $value : null,
             'unit' => $unit,
             'bar' => $closed,
@@ -724,30 +818,50 @@ final class TechnicalAnalysis
     }
 
     /**
-     * Chart meta for a zero-line deadzone band.
+     * Chart meta for a zero-line deadzone band (optional asymmetric lo/hi from trend).
      *
      * @param list<float|null> $series
-     * @return array{eps: float, med: ?float, levels: list<float>, bands: list<array<string, mixed>>, deadzone_eps: float, vol_median: ?float}
+     * @return array{eps: float, med: ?float, levels: list<float>, bands: list<array<string, mixed>>, deadzone_eps: float, vol_median: ?float, lo: float, hi: float, bias: ?float}
      */
-    public static function deadzoneChartExtras(array $series, float $eps, string $volLabel = 'vol'): array
-    {
+    public static function deadzoneChartExtras(
+        array $series,
+        float $eps,
+        string $volLabel = 'vol',
+        ?float $lo = null,
+        ?float $hi = null,
+        ?float $bias = null,
+    ): array {
         $med = self::seriesAbsMedian($series);
+        $loBound = $lo !== null ? (float) $lo : -$eps;
+        $hiBound = $hi !== null ? (float) $hi : $eps;
+        if ($loBound > $hiBound) {
+            [$loBound, $hiBound] = [$hiBound, $loBound];
+        }
+        $asym = abs($loBound + $hiBound) > 1e-12 || ($bias !== null && abs($bias) > 1e-6);
+        $labelCore = $asym
+            ? sprintf('мёртвая зона [%.4g … %.4g]', $loBound, $hiBound)
+            : sprintf('мёртвая зона ±%.4g', $eps);
+        if ($bias !== null && abs($bias) > 1e-6) {
+            $labelCore .= sprintf(' bias%+.2f', $bias);
+        }
+        if ($med !== null) {
+            $labelCore .= sprintf(' (%s=%.4g)', $volLabel, $med);
+        }
 
         return [
             'eps' => $eps,
+            'lo' => $loBound,
+            'hi' => $hiBound,
+            'bias' => $bias,
             'med' => $med,
-            'levels' => [0.0, $eps, -$eps],
+            'levels' => [0.0, $hiBound, $loBound],
             'bands' => [
                 [
-                    'lo' => -$eps,
-                    'hi' => $eps,
+                    'lo' => $loBound,
+                    'hi' => $hiBound,
                     'color' => 'rgba(196, 92, 38, 0.22)',
                     'border' => '#c45c26',
-                    'label' => sprintf(
-                        'мёртвая зона ±%.4g%s',
-                        $eps,
-                        $med !== null ? sprintf(' (%s=%.4g)', $volLabel, $med) : ''
-                    ),
+                    'label' => $labelCore,
                 ],
             ],
             'deadzone_eps' => $eps,
@@ -775,26 +889,36 @@ final class TechnicalAnalysis
 
     /**
      * Deadzone boundary crosses (not zero-cross):
-     * +1 long  — cross lower bound (−eps) from below upward
-     * -1 short — cross upper bound (+eps) from above downward
+     * +1 long  — cross lower bound (lo, default −eps) from below upward
+     * -1 short — cross upper bound (hi, default +eps) from above downward
      *
      * @param list<float|null> $values
-     * @return list<int>
+     * @param float $epsOrLo symmetric eps, or lower bound when $hi is set
      */
-    public static function deadzoneBoundarySignals(array $values, float $eps): array
+    public static function deadzoneBoundarySignals(array $values, float $epsOrLo, ?float $hi = null): array
     {
         $n = count($values);
         $sig = array_fill(0, $n, 0);
-        $eps = max(0.0, $eps);
+        if ($hi === null) {
+            $eps = max(0.0, $epsOrLo);
+            $loBound = -$eps;
+            $hiBound = $eps;
+        } else {
+            $loBound = (float) $epsOrLo;
+            $hiBound = (float) $hi;
+            if ($loBound > $hiBound) {
+                [$loBound, $hiBound] = [$hiBound, $loBound];
+            }
+        }
         for ($i = 1; $i < $n; $i++) {
             if ($values[$i] === null || $values[$i - 1] === null) {
                 continue;
             }
             $prev = (float) $values[$i - 1];
             $curr = (float) $values[$i];
-            if ($prev < -$eps && $curr >= -$eps) {
+            if ($prev < $loBound && $curr >= $loBound) {
                 $sig[$i] = 1;
-            } elseif ($prev > $eps && $curr <= $eps) {
+            } elseif ($prev > $hiBound && $curr <= $hiBound) {
                 $sig[$i] = -1;
             }
         }
@@ -825,7 +949,8 @@ final class TechnicalAnalysis
                 $hist = $m['hist'];
                 $price = (float) ($closes[$n - 1] ?? 0);
                 $eps = self::priceDiffDeadzone($hist, $price);
-                $extra = self::deadzoneChartExtras($hist, $eps, 'med|hist|');
+                $lv = self::deadzoneLevelsByTrend($hist, $closes, $eps);
+                $extra = self::deadzoneChartExtras($hist, $eps, 'med|hist|', $lv['lo'], $lv['hi'], $lv['bias']);
                 return [
                     'lines' => [
                         ['name' => 'MACD', 'color' => '#1f4b7a', 'values' => $m['macd']],
@@ -856,7 +981,8 @@ final class TechnicalAnalysis
                 }
                 $price = (float) ($closes[$n - 1] ?? 0);
                 $eps = self::priceDiffDeadzone($diff, $price);
-                $extra = self::deadzoneChartExtras($diff, $eps, 'med|diff|');
+                $lv = self::deadzoneLevelsByTrend($diff, $closes, $eps);
+                $extra = self::deadzoneChartExtras($diff, $eps, 'med|diff|', $lv['lo'], $lv['hi'], $lv['bias']);
                 return [
                     'lines' => [
                         ['name' => 'SMA10−SMA30', 'color' => '#1f4b7a', 'values' => $diff],
@@ -879,7 +1005,8 @@ final class TechnicalAnalysis
                 }
                 $price = (float) ($closes[$n - 1] ?? 0);
                 $eps = self::priceDiffDeadzone($diff, $price);
-                $extra = self::deadzoneChartExtras($diff, $eps, 'med|diff|');
+                $lv = self::deadzoneLevelsByTrend($diff, $closes, $eps);
+                $extra = self::deadzoneChartExtras($diff, $eps, 'med|diff|', $lv['lo'], $lv['hi'], $lv['bias']);
                 return [
                     'lines' => [
                         ['name' => 'EMA12−EMA26', 'color' => '#1f4b7a', 'values' => $diff],
@@ -904,7 +1031,8 @@ final class TechnicalAnalysis
             'ROC(10) zero-cross' => (static function () use ($closes): array {
                 $roc = self::roc($closes, 10);
                 $eps = self::rocDeadzone($roc);
-                $extra = self::deadzoneChartExtras($roc, $eps, 'med|ROC|');
+                $lv = self::deadzoneLevelsByTrend($roc, $closes, $eps);
+                $extra = self::deadzoneChartExtras($roc, $eps, 'med|ROC|', $lv['lo'], $lv['hi'], $lv['bias']);
                 return [
                     'lines' => [
                         ['name' => 'ROC10', 'color' => '#1f4b7a', 'values' => $roc],
@@ -923,7 +1051,8 @@ final class TechnicalAnalysis
                 }
                 $price = (float) ($closes[$n - 1] ?? 0);
                 $eps = self::priceDiffDeadzone($mom, $price);
-                $extra = self::deadzoneChartExtras($mom, $eps, 'med|mom|');
+                $lv = self::deadzoneLevelsByTrend($mom, $closes, $eps);
+                $extra = self::deadzoneChartExtras($mom, $eps, 'med|mom|', $lv['lo'], $lv['hi'], $lv['bias']);
                 return [
                     'lines' => [
                         ['name' => 'Mom10', 'color' => '#1f4b7a', 'values' => $mom],

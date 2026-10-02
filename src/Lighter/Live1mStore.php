@@ -114,9 +114,13 @@ final class Live1mStore
         return self::run($dbPath, 'status', $extra);
     }
 
-    public static function setMethod(string $dbPath, string $method, ?int $sessionId = null): array
+    public static function setMethod(string $dbPath, string $method, ?int $sessionId = null, ?string $mode = null): array
     {
         $extra = ['--method', escapeshellarg($method)];
+        if ($mode !== null && $mode !== '') {
+            $extra[] = '--mode';
+            $extra[] = escapeshellarg($mode);
+        }
         if ($sessionId !== null) {
             $extra[] = '--session-id';
             $extra[] = (string) $sessionId;
@@ -125,12 +129,16 @@ final class Live1mStore
         return self::run($dbPath, 'set_method', $extra);
     }
 
-    public static function setLead(string $dbPath, string $method, string $resolution, ?int $sessionId = null): array
+    public static function setLead(string $dbPath, string $method, string $resolution, ?int $sessionId = null, ?string $mode = null): array
     {
         $extra = [
             '--method', escapeshellarg($method),
             '--resolution', escapeshellarg($resolution),
         ];
+        if ($mode !== null && $mode !== '') {
+            $extra[] = '--mode';
+            $extra[] = escapeshellarg($mode);
+        }
         if ($sessionId !== null) {
             $extra[] = '--session-id';
             $extra[] = (string) $sessionId;

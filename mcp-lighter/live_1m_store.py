@@ -267,50 +267,110 @@ def save_tick_bundle(db_path: str, payload: dict) -> dict:
         con.close()
 
 
-def set_lead(db_path: str, session_id: int | None, method: str, resolution: str | None = None) -> dict:
+def set_lead(
+    db_path: str,
+    session_id: int | None,
+    method: str,
+    resolution: str | None = None,
+    method_mode: str | None = None,
+) -> dict:
     con = connect(db_path)
     try:
         now = _now()
         method = str(method or "").strip()
         if not method:
             return {"ok": False, "error": "method required"}
+        mode = str(method_mode or "").strip().lower() or None
+        if mode not in (None, "flash", "manual"):
+            return {"ok": False, "error": "method_mode must be flash|manual"}
         if session_id:
             row = con.execute(
-                "SELECT id FROM live_1m_sessions WHERE id=? AND status='running'",
+                "SELECT id, config_json FROM live_1m_sessions WHERE id=? AND status='running'",
                 (int(session_id),),
             ).fetchone()
         else:
             row = con.execute(
-                "SELECT id FROM live_1m_sessions WHERE status='running' ORDER BY id DESC LIMIT 1"
+                """
+                SELECT id, config_json FROM live_1m_sessions
+                WHERE status='running' ORDER BY id DESC LIMIT 1
+                """
             ).fetchone()
         if not row:
             return {"ok": False, "error": "no running session"}
-        sid = int(row[0])
+        sid = int(row[0] if not hasattr(row, "keys") else row["id"])
+        cfg_raw = row[1] if not hasattr(row, "keys") else row["config_json"]
+        cfg: dict = {}
+        if isinstance(cfg_raw, str) and cfg_raw.strip():
+            try:
+                parsed = json.loads(cfg_raw)
+                if isinstance(parsed, dict):
+                    cfg = parsed
+            except Exception:
+                cfg = {}
+        elif isinstance(cfg_raw, dict):
+            cfg = dict(cfg_raw)
+        if mode:
+            cfg["method_mode"] = mode
+            cfg["method_source"] = "manual" if mode == "manual" else "deepseek-flash"
+        cfg["method"] = method
         res = str(resolution or "").strip() or None
         if res:
+            cfg["resolution"] = res
             con.execute(
-                "UPDATE live_1m_sessions SET method=?, resolution=?, updated_at=?, last_reason=? WHERE id=?",
-                (method, res, now, f"lead -> {method} @{res}", sid),
+                """
+                UPDATE live_1m_sessions
+                SET method=?, resolution=?, config_json=?, updated_at=?, last_reason=?
+                WHERE id=?
+                """,
+                (
+                    method,
+                    res,
+                    json.dumps(cfg, ensure_ascii=True),
+                    now,
+                    f"lead -> {method} @{res}" + (f" [{mode}]" if mode else ""),
+                    sid,
+                ),
             )
-            msg = f"ведущий lead: {method} @ {res}"
+            msg = f"ведущий lead: {method} @ {res}" + (f" · mode={mode}" if mode else "")
         else:
             con.execute(
-                "UPDATE live_1m_sessions SET method=?, updated_at=?, last_reason=? WHERE id=?",
-                (method, now, f"method -> {method}", sid),
+                """
+                UPDATE live_1m_sessions
+                SET method=?, config_json=?, updated_at=?, last_reason=?
+                WHERE id=?
+                """,
+                (
+                    method,
+                    json.dumps(cfg, ensure_ascii=True),
+                    now,
+                    f"method -> {method}" + (f" [{mode}]" if mode else ""),
+                    sid,
+                ),
             )
-            msg = f"ведущий метод изменён: {method}"
+            msg = f"ведущий метод изменён: {method}" + (f" · mode={mode}" if mode else "")
         con.execute(
             "INSERT INTO live_1m_logs (session_id, created_at, level, message) VALUES (?, ?, 'info', ?)",
             (sid, now, msg),
         )
         con.commit()
-        return {"ok": True, "session_id": sid, "method": method, "resolution": res}
+        return {
+            "ok": True,
+            "session_id": sid,
+            "method": method,
+            "resolution": res,
+            "method_mode": cfg.get("method_mode") or "flash",
+        }
     finally:
         con.close()
 
 
-def set_method(db_path: str, session_id: int | None, method: str) -> dict:
-    return set_lead(db_path, session_id, method, None)
+def set_method(
+    db_path: str,
+    session_id: int | None,
+    method: str,
+    method_mode: str | None = None,
+) -> dict:
+    return set_lead(db_path, session_id, method, None, method_mode)
 
 
 def _normalize_pct_list(raw, fallback: list[float]) -> list[float]:
@@ -584,6 +644,7 @@ def main() -> int:
     ap.add_argument("--session-id", type=int, default=None)
     ap.add_argument("--method", default=None)
     ap.add_argument("--resolution", default=None)
+    ap.add_argument("--mode", default=None, help="method_mode: flash|manual")
     ap.add_argument("--ticks", type=int, default=40)
     ap.add_argument("--trades", type=int, default=30)
     ns = ap.parse_args()
@@ -611,7 +672,13 @@ def main() -> int:
         if ns.op == "set_method":
             print(
                 json.dumps(
-                    set_lead(ns.db_path, ns.session_id, ns.method or "", getattr(ns, "resolution", None)),
+                    set_lead(
+                        ns.db_path,
+                        ns.session_id,
+                        ns.method or "",
+                        getattr(ns, "resolution", None),
+                        getattr(ns, "mode", None),
+                    ),
                     ensure_ascii=True,
                 )
             )

@@ -23,6 +23,7 @@ use Lighter\IndicatorReportStore;
 use Lighter\IndicatorTick;
 use Lighter\Sim1mEngine;
 use Lighter\Live1mEngine;
+use Lighter\Live1mStore;
 use Lighter\TechnicalAnalysis;
 
 function jsonOut(array $payload, int $status = 200): never
@@ -636,6 +637,7 @@ try {
                 'lot_usd' => (float) ($_GET['lot_usd'] ?? $_POST['lot_usd'] ?? 200),
                 'tick_sec' => (int) ($_GET['tick_sec'] ?? $_POST['tick_sec'] ?? 30),
                 'method' => (string) ($_GET['method'] ?? $_POST['method'] ?? 'ROC(10) zero-cross'),
+                'method_mode' => (string) ($_GET['method_mode'] ?? $_POST['method_mode'] ?? 'flash'),
                 'resolution' => (string) ($_GET['resolution'] ?? $_POST['resolution'] ?? '1m'),
                 'tp_levels' => json_decode((string) ($_GET['tp_levels'] ?? $_POST['tp_levels'] ?? '[50]'), true) ?: [50],
                 'sl_levels' => json_decode((string) ($_GET['sl_levels'] ?? $_POST['sl_levels'] ?? '[30]'), true) ?: [30],
@@ -647,6 +649,17 @@ try {
             $simClient = $cfg->network() === 'testnet' ? Client::testnet(45) : Client::mainnet(45);
             $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
             jsonOut(Live1mEngine::stop($simClient, $cfg, $sid === false ? null : $sid));
+
+        case 'live_1m_close_all':
+            $cfg = IndicatorConfig::load();
+            $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
+            $mid = filter_var($_GET['market_id'] ?? $_POST['market_id'] ?? 120, FILTER_VALIDATE_INT);
+            $out = Live1mEngine::closeAll(
+                $cfg,
+                $sid === false ? null : $sid,
+                $mid === false ? 120 : $mid,
+            );
+            jsonOut($out, !empty($out['ok']) ? 200 : 400);
 
         case 'live_1m_resume':
             $cfg = IndicatorConfig::load();
@@ -710,7 +723,18 @@ try {
             $cfg = IndicatorConfig::load();
             $sid = filter_var($_GET['session_id'] ?? $_POST['session_id'] ?? null, FILTER_VALIDATE_INT);
             $method = (string) ($_GET['method'] ?? $_POST['method'] ?? '');
-            $out = Live1mEngine::setMethod($cfg, $method, $sid === false ? null : $sid);
+            $mode = (string) ($_GET['mode'] ?? $_POST['mode'] ?? $_GET['method_mode'] ?? $_POST['method_mode'] ?? '');
+            if ($method === '' && $mode === 'flash') {
+                // Unlock Flash keeping current session method
+                $wrap = Live1mStore::session($cfg->dbPath(), $sid === false ? null : $sid);
+                $method = (string) (($wrap['session']['method'] ?? null) ?: 'ROC(10) zero-cross');
+            }
+            $out = Live1mEngine::setMethod(
+                $cfg,
+                $method,
+                $sid === false ? null : $sid,
+                $mode !== '' ? $mode : null
+            );
             jsonOut($out, !empty($out['ok']) ? 200 : 400);
 
         case 'live_1m_set_resolution':
@@ -742,7 +766,7 @@ try {
         default:
             jsonOut([
                 'ok' => false,
-                'error' => 'Unknown action. Use …|sim_1m_*|live_1m_start|live_1m_stop|live_1m_resume|live_1m_candidates|live_1m_adopt|live_1m_tick|live_1m_status|live_1m_set_method|live_1m_set_resolution|live_1m_set_levels|sim_1m_set_levels',
+                'error' => 'Unknown action. Use …|sim_1m_*|live_1m_start|live_1m_stop|live_1m_close_all|live_1m_resume|live_1m_candidates|live_1m_adopt|live_1m_tick|live_1m_status|live_1m_set_method|live_1m_set_resolution|live_1m_set_levels|sim_1m_set_levels',
             ], 400);
     }
 } catch (ApiException $e) {
